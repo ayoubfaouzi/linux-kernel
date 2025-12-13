@@ -1,0 +1,25 @@
+The files in this directory demonstrate the effect of the -Bsymbolic linker
+option. This demonstration is similar in kind to the one in TLPI Section
+41.12 (page 855), but the example in the book is simpler.
+
+The main program depends on libfoo1.so and libfoo2.so; libfoo2.so depends on
+libfoo3.so.
+
+The function xyz() is defined in the main program and also in each of the
+three libraries libfoo1.so, libfoo2.so, and libfoo3.so.  Inside each of the
+three libraries, there is a call to xyz(), and the question is to which
+definition will each reference bind? The general answer is that a reference
+will bind to the first definition found when searching from the front of the
+look-up scope (i.e., the definition in the main program). However, because
+libfoo2.so is built with -Bsymbolic, the reference in that library will bind
+to the local definition.
+
+We also see that the reference in libfoo3.so binds to the definition in the
+main program. This illustrates the fact that -Bsymbolic in one library
+(libfoo2.so) does not have an effect for a dependency of that library
+(libfoo3.so).
+
+To run the demonstration, use the following commands;
+
+	make
+	make run

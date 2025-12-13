@@ -1,0 +1,10 @@
+The dynload.c file contains the source code of the program shown in
+Listing 42-1 on page 865 of "The Linux Programming Interface".
+
+The libdemo.so library that is used for the demonstrations on pages
+864 and 865 of TLPI is built from files in the 'demo' subdirectory.
+Thus, the demonstration at the foot of page 864 and the top of page 865
+should be done using the following commands:
+
+    $ ./dynload demo/libdemo.so.1 x1
+    $ LD_LIBRARY_PATH=. demo/dynload libdemo.so.1 x1

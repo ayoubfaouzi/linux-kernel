@@ -1,0 +1,26 @@
+This directory contains some scripts that go with a presentation of mine,
+"Containers in (less than) 100 lines of shell". The line count on the three
+core scripts (create_lower.sh, consh_setup.sh, and consh_post_setup.sh) does
+rather exceed 100 lines, but, if you strip away the comments, empty lines,
+$VERBOSE logging, "usage" messages, and a few sanity checks on arguments, the
+line count comes in at comfortably under 100 lines.
+
+==========
+
+Example usage:
+
+    $ mkdir demo
+    $ cd demo
+    $ ../create_lowerfs.sh lower
+    $ ../consh_setup.sh -c consh_cgrp lower ovly
+    / #
+
+The networking set-up can then be done from a shell outside the container:
+
+    $ ./consh_nw_setup.sh $(pidof busybox) consh 10.0.0.1/24 10.0.0.2/24
+
+After exiting the container shell, you can clean up with the following script:
+
+    $ ./consh_cleanup.sh -c consh_cgrp demo
+
+    ('demo' is the directory that was created when setting up the container.)
