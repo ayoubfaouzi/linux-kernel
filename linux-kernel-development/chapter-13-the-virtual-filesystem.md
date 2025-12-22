@@ -100,7 +100,7 @@ Historically, Unix systems use **four fundamental abstractions** to model files 
 
 - Even though Linux is written in **C**, the VFS is designed **like an object-oriented system**, using structures that contain both data and **function pointers (methods)**.
 
-### **Core VFS “Objects”**
+### Core VFS “Objects”
 
 | VFS Object                   | Represents                                                              |
 | ---------------------------- | ----------------------------------------------------------------------- |
@@ -109,7 +109,9 @@ Historically, Unix systems use **four fundamental abstractions** to model files 
 | **dentry (directory entry)** | A path component: file or directory name in a path (`/home/user/file`). |
 | **file**                     | An open file (per process).                                             |
 
-- ⚠️ There is **no separate “directory object”**. A directory is just a special kind of file. The *dentry* object only represents **names/paths**, not the directory file itself.
+⚠️ There is **no separate “directory object”**. A directory is just a special kind of file. The _dentry_ object only represents **names/paths**, not the directory file itself.
+
+### Operations Objects (Methods)
 
 Each primary object has a corresponding **operations structure** containing pointers to functions—like virtual methods in OOP:
 
@@ -120,9 +122,9 @@ Each primary object has a corresponding **operations structure** containing poin
 | **dentry_operations** | Actions on directory entries (e.g., `d_compare()`, `d_delete()`). |
 | **file_operations**   | Actions on an open file (e.g., `read()`, `write()`).              |
 
-- Filesystems can use default **generic** implementations or provide their own.
+Filesystems can use default **generic** implementations or provide their own.
 
-### **Additional Important Structures**
+### Additional Important Structures
 
 | Structure                   | Purpose                                                  |
 | --------------------------- | -------------------------------------------------------- |
@@ -130,3 +132,127 @@ Each primary object has a corresponding **operations structure** containing poin
 | **vfsmount**                | Represents a mount point.                                |
 | **fs_struct (per process)** | Tracks the process’s current root and working directory. |
 | **file (per process)**      | Represents one open file descriptor.                     |
+
+## The Superblock Object
+
+- In Linux, every filesystem must expose a **superblock object**. This structure holds **global information about a mounted filesystem**, such as its size, type, mount flags, and root directory.
+- For **disk-based filesystems** (ext4, FAT, NTFS), the superblock corresponds to a **control block stored physically on disk**.
+- This area contains filesystem metadata such as **block size**, **inode count**, **UUID**, and **feature flags**.
+- For **virtual or memory-based filesystems** (`sysfs`, `proc`, `tmpfs`), there is **no disk representation**.
+  - Instead, Linux **generates the superblock entirely in memory** when the filesystem mounts.
+- Thus, `struct super_block` is a kernel in-memory representation **regardless of whether the filesystem has one stored on disk**.
+- The superblock structure defined in `<linux/fs.h>` contains:
+  - Filesystem metadata (block size, magic number, max file size)
+  - Pointers to filesystem **operations** (`super_operations`)
+  - The root of the filesystem (`s_root`)
+  - Memory and security information
+  - Device or MTD reference (flash, RAM, etc.)
+  - Private filesystem-specific data (`s_fs_info`)
+- This structure allows **all filesystem types to look uniform to the VFS**, even if the underlying disk format differs drastically.
+
+---
+
+### 🔧 How Superblocks Are Created
+
+Superblock management code exists in:
+
+```
+fs/super.c
+```
+
+During a mount operation, the kernel calls:
+
+```
+alloc_super()
+```
+
+This performs:
+
+| Step | Action                                                                             |
+| ---- | ---------------------------------------------------------------------------------- |
+| 1    | Allocate the `struct super_block`                                                  |
+| 2    | Initialize default fields and reference counters                                   |
+| 3    | Call filesystem-specific code to **read the superblock from disk** (if applicable) |
+| 4    | Filesystem fills in custom fields (operations, block size, root inode, etc.)       |
+
+After allocation, a **filesystem’s mount handler** finishes populating the superblock, including reading the actual metadata from the physical device (if any).
+
+---
+
+### 🧠 Why This Matters
+
+- The VFS needs a **generic, abstract object** to work with _any_ filesystem.
+- Each filesystem conforms to the interface expected by the VFS.
+- Non-Unix filesystems (like FAT, NTFS) must **simulate Unix-style metadata** so the VFS can treat them as normal filesystems.
+
+This abstraction eliminates the need for special-case code in the kernel or user space.
+
+```c
+struct super_block {
+	struct list_head	s_list;		/* Keep this first */
+	dev_t			s_dev;		/* search index; _not_ kdev_t */
+	unsigned char		s_dirt;
+	unsigned char		s_blocksize_bits;
+	unsigned long		s_blocksize;
+	loff_t			s_maxbytes;	/* Max file size */
+	struct file_system_type	*s_type;
+	const struct super_operations	*s_op;
+	const struct dquot_operations	*dq_op;
+	const struct quotactl_ops	*s_qcop;
+	const struct export_operations *s_export_op;
+	unsigned long		s_flags;
+	unsigned long		s_magic;
+	struct dentry		*s_root;
+	struct rw_semaphore	s_umount;
+	struct mutex		s_lock;
+	int			s_count;
+	atomic_t		s_active;
+#ifdef CONFIG_SECURITY
+	void                    *s_security;
+#endif
+	const struct xattr_handler **s_xattr;
+
+	struct list_head	s_inodes;	/* all inodes */
+	struct hlist_head	s_anon;		/* anonymous dentries for (nfs) exporting */
+	struct list_head	s_files;
+	/* s_dentry_lru and s_nr_dentry_unused are protected by dcache_lock */
+	struct list_head	s_dentry_lru;	/* unused dentry lru */
+	int			s_nr_dentry_unused;	/* # of dentry on lru */
+
+	struct block_device	*s_bdev;
+	struct backing_dev_info *s_bdi;
+	struct mtd_info		*s_mtd;
+	struct list_head	s_instances;
+	struct quota_info	s_dquot;	/* Diskquota specific options */
+
+	int			s_frozen;
+	wait_queue_head_t	s_wait_unfrozen;
+
+	char s_id[32];				/* Informational name */
+
+	void 			*s_fs_info;	/* Filesystem private info */
+	fmode_t			s_mode;
+
+	/* Granularity of c/m/atime in ns.
+	   Cannot be worse than a second */
+	u32		   s_time_gran;
+
+	/*
+	 * The next field is for VFS *only*. No filesystems have any business
+	 * even looking at it. You had been warned.
+	 */
+	struct mutex s_vfs_rename_mutex;	/* Kludge */
+
+	/*
+	 * Filesystem subtype.  If non-empty the filesystem type field
+	 * in /proc/mounts will be "type.subtype"
+	 */
+	char *s_subtype;
+
+	/*
+	 * Saved mount options for lazy filesystems using
+	 * generic_show_options()
+	 */
+	char *s_options;
+};
+```
