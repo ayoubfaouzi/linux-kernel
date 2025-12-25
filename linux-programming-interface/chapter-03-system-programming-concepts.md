@@ -274,7 +274,7 @@ printf("%lld\n", (long long) offset);
 
 ### Miscellaneous Portability Issues
 
-- POSIX **does not guarantee field order** in structures.
+POSIX **does not guarantee field order** in structures.
 ```c
 struct sembuf {
     unsigned short sem_num;
@@ -299,7 +299,7 @@ struct sembuf s = {
 };
 ```
 
-- Some macros are **widely available but not standardized** (e.g., `WCOREDUMP`).
+Some macros are **widely available but not standardized** (e.g., `WCOREDUMP`).
 ```c
 // Portable usage
 #ifdef WCOREDUMP
@@ -307,9 +307,7 @@ struct sembuf s = {
 #endif
 ```
 
-- Some systems require extra headers that Linux does not.
-- The book marks these as:
-
+Some systems require extra headers that Linux does not.
 ```c
 #include <sys/types.h>   /* For portability */
 
