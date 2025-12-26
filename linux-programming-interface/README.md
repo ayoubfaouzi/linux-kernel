@@ -22,3 +22,4 @@ Therefore, while I’ve designed this book to be useful to programmers working w
 ## References
 
 - Official website: https://man7.org/tlpi/index.html
+- https://github.com/posborne/linux-programming-interface-exercises/tree/master/03-system-programming-concepts
