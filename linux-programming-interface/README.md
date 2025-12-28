@@ -18,6 +18,10 @@ Therefore, while I’ve designed this book to be useful to programmers working w
 - the `/proc` file system; and
 - Linux-specific details of the implementation of file I/O, signals, timers, threads, shared libraries, inter-process communication, and sockets.
 
+## Source Code
+
+- `tlpi-dist`: Distribution version: a tarball of the source code that includes extra material not shown in the book. Probably, the distribution version is the version of the code that you want.
+- `tlpi-book`: Book version: a tarball of the source code as it appears in the book.
 
 ## References
 
