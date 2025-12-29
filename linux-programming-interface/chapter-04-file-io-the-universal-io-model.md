@@ -70,7 +70,6 @@ int open(const char *pathname, int flags, ... /* mode_t mode */);
   | `O_RDWR` | 2 | Open for both reading and writing |
 
 - ⚠️ `O_RDWR` is **not** the same as `O_RDONLY | O_WRONLY` — the latter is invalid.
-
 - `open()` always uses the **lowest unused file descriptor** in the process.
 - You can force a specific FD (e.g., FD 0 for stdin) like this:
   ```c
@@ -124,3 +123,170 @@ Equivalent to:
 ```c
 open(pathname, O_WRONLY | O_CREAT | O_TRUNC, mode);
 ```
+
+## Reading from a File: read()
+
+```c
+#include <unistd.h>
+ssize_t read(int fd, void *buffer, size_t count);
+```
+
+- Retrieve data from an open file (or any file-like object) using a file descriptor.
+- **Returns**:
+  - Number of bytes actually read (≥ 0) on success
+  - **0** → end-of-file (EOF) reached
+  - **–1** → error (sets `errno`)
+- **Args**:
+  - `fd` — File descriptor of the open file (returned by `open()`)
+  - `buffer` — Pointer to a pre-allocated memory area where data will be stored
+  - `count` — Maximum number of bytes to read (type `size_t` = unsigned integer)
+- **No automatic memory allocation**: You must supply a buffer large enough to hold up to `count` bytes.
+  - (Contrast with some stdio functions like `fgets()` that allocate memory.)
+- **Partial reads are normal**:
+  - For regular files: usually because you’re near `EOF`.
+  - For other types (pipes, FIFOs, sockets, terminals): many reasons (e.g., terminal reads stop at **newline** by default).
+  - Always check the return value — it can be less than `count` even on success.
+- **Return type `ssize_t`**: Signed integer, can hold –1 for errors and large positive values.
+- You **cannot** safely use `printf()` or `strcpy()` directly on the buffer after `read()`, because:
+  - `read()` does **not** add a null terminator (`\0`).
+  - It reads raw bytes — could be text, binary data, structs, etc.
+
+```c
+#define MAX_READ 20
+char buffer[MAX_READ + 1];     // +1 for \0
+ssize_t numRead;
+
+numRead = read(STDIN_FILENO, buffer, MAX_READ);
+if (numRead == -1)
+    errExit("read");
+
+buffer[numRead] = '\0';        // Explicitly null-terminate
+printf("Input: %s\n", buffer);
+```
+
+## Writing to a File: write()
+
+```c
+#include <unistd.h>
+ssize_t write(int fd, const void *buffer, size_t count);
+```
+
+- The counterpart to `read()` for sending data to an open file (or any file-like object).
+- **Returns**:
+  - Number of bytes actually written (≥ 0) on success
+  - **–1** on error (sets `errno`)
+- **Args**:
+  - `fd` — File descriptor of the open file (from `open()`)
+  - `buffer` — Pointer to the data to write
+  - `count` — Number of bytes to attempt to write (`size_t` = unsigned integer)
+- **Partial writes are possible** (and common):
+  - Return value can be less than `count` even on success.
+  - For disk files: usually caused by disk full or process hitting the file-size limit (`RLIMIT_FSIZE`).
+  - For other types (pipes, sockets, terminals): various reasons (e.g., buffer full, connection closed).
+- **Always check the return value** and handle partial writes by looping if needed (similar to `read()`).
+- **Buffering in the kernel**:
+  - A successful `write()` does **not** guarantee data is immediately on disk.
+  - The kernel buffers disk I/O to improve performance (reduces physical disk writes).
+  - Actual disk transfer happens later (details in Chapter 13).
+  - If you need guaranteed disk write, use `fsync()` or `O_SYNC`/`O_DSYNC` flags on `open()`.
+
+## Closing a File: close()
+
+```c
+#include <unistd.h>
+int close(int fd);
+```
+- **Purpose**: Closes an open file descriptor (`fd`), freeing it for reuse by the process.
+- **Returns**:
+  - **0** on success
+  - **–1** on error (sets `errno`)
+- **Automatic cleanup**: When a process exits (or is terminated), the kernel automatically closes all its open file descriptors.
+- **Best practice** — **Always explicitly close** file descriptors when you’re done with them:
+  - Improves code readability and maintainability.
+  - Prevents resource leaks — file descriptors are finite (per-process limit).
+  - Critical in long-running programs (e.g., daemons, servers, shells) that open many files or sockets.
+- Always check the return value:
+  ```c
+  if (close(fd) == -1)
+      errExit("close");  // or handle appropriately
+  ```
+- Common errors include:
+  - Closing an invalid/unopened FD (`EBADF`)
+  - Closing the same FD twice (`EBADF`)
+  - Filesystem-specific errors (e.g., NFS commit failure — data not written to remote disk)
+    - On NFS (Network File System), `close()` can fail if buffered data could not be successfully committed to the remote server.  This is one of the rare cases where `close()` itself can return an error even if earlier `write()` calls succeeded.
+
+## Changing the File Offset: lseek()
+
+- For each open file, the kernel maintains a **file offset** — the byte position where the next `read()` or `write()` will start.
+- Offset is relative to the **start** of the file (0 = first byte).
+- On `open()`, offset is set to **0**.
+- `read()` and `write()` automatically advance the offset by the number of bytes actually transferred.
+- Sequential I/O (normal use) just works naturally.
+
+```c
+#include <unistd.h>
+off_t lseek(int fd, off_t offset, int whence);
+```
+- **Purpose**: allows random access within a file.
+- **Returns**: New file offset on success, or **–1** on error.
+- **whence** (base point):
+  | Value      | Meaning                                                                 |
+  |------------|-------------------------------------------------------------------------|
+  | `SEEK_SET` | Set offset to exactly `offset` bytes from the start of the file (offset ≥ 0) |
+  | `SEEK_CUR` | Adjust offset by `offset` bytes relative to current position (can be negative) |
+  | `SEEK_END` | Set offset to file size + `offset` (i.e., `offset` bytes past the end) |
+
+Common `lseek()` Usage Examples:
+
+| Call                          | Resulting file offset position                          |
+|-------------------------------|----------------------------------------------------------|
+| `lseek(fd, 0, SEEK_SET)`      | Start of file (byte 0)                                   |
+| `lseek(fd, 0, SEEK_END)`      | One byte past the end of the file (file size)            |
+| `lseek(fd, -1, SEEK_END)`     | Last byte of the file                                    |
+| `lseek(fd, -10, SEEK_CUR)`    | 10 bytes before current position                         |
+| `lseek(fd, 10000, SEEK_END)`  | 10000 bytes past the end of the file                     |
+| `lseek(fd, 0, SEEK_CUR)`      | Get current offset (no change) — equivalent to `tell(fd)` on some systems |
+<p align="center"><img src="./assets/lseek.png" width="400px" height="auto"></p>
+
+- **Restrictions**:
+  - `lseek()` **cannot** be used on pipes, FIFOs, sockets, or terminals → fails with `ESPIPE`.
+  - It **can** be used on disk files, tape drives, and other seekable devices.
+- **File Holes** (Sparse Files):
+  - You can `lseek()` past the end of a file and then `write()` data → creates a **file hole**.
+  - **Holes** are ranges of zero bytes (null bytes) that exist logically but **do not consume disk space**.
+  - Reading from a hole returns a buffer filled with zeros.
+  - Disk blocks are allocated only when you actually write data into the hole.
+  - Holes are useful for **sparse files** (e.g., core dumps, databases, virtual machine images) — they save disk space.
+  - On block-based filesystems, partial blocks at hole edges may still allocate a full block (filled with zeros) 🤷‍♀️.
+  - **Non-native filesystems** (e.g., VFAT) often do not support holes and write explicit zeros.
+  - Writing into a hole **reduces** free disk space (blocks get allocated) even though file size stays the same.
+- `posix_fallocate(fd, offset, len)` — Ensures disk space is pre-allocated for a range (avoids later `write()` failures due to `ENOSPC`).
+  - Historically wrote zeros; modern Linux uses efficient `fallocate()` syscall (since kernel 2.6.23).
+
+## Operations Outside the Universal I/O Model: ioctl()
+
+```c
+#include <sys/ioctl.h>
+int ioctl(int fd, int request, ... /* argp */);
+```
+- **Purpose**: `ioctl()` is the **catch-all mechanism** for performing operations that don't fit the universal I/O model (`open()`, `read()`, `write()`, `close()`, `lseek()`).
+  - Controlling terminal settings
+  - Disk partitioning
+  - Network interface configuration
+  - Tape drive operations
+  - Filesystem attributes
+- **Returns**:
+  - Varies depending on the specific `request` (often 0 on success, or a value like the current setting)
+  - **–1** on error (sets `errno`)
+- **Args**:
+  - `fd` — Open file descriptor for the file or device to control.
+  - `request` — Integer constant (defined in device-specific headers) that specifies the exact operation.
+  - `argp` — Optional third argument (any type):
+    - Usually a **pointer** to an integer or a structure.
+    - Sometimes unused (pass `NULL` or omit).
+    - The `request` value tells the kernel what type and purpose `argp` has.
+- `ioctl()` is **very powerful but non-portable**:
+  - SUSv3 only standardizes it for **STREAMS** devices (a System V feature **not** supported in mainline Linux).
+  - Almost all other uses are **implementation-specific**.
+  - Many `ioctl()` operations are common across UNIX variants (BSD, Solaris, etc.), but details (request codes, argument types) often differ.
