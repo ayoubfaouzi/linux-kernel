@@ -322,3 +322,49 @@ int newfd = fcntl(oldfd, F_DUPFD, startfd);
 | `fcntl(..., F_DUPFD, start)` | Lowest ≥ `start`                 | No                  | No                  | Range control |
 | `fcntl(..., F_DUPFD_CLOEXEC, start)` | Lowest ≥ `start`         | No                  | Yes                 | Thread-safe / secure |
 | `dup3(oldfd, newfd, flags)` | Exactly `newfd`                  | Yes                 | Yes (if `O_CLOEXEC`) | Modern secure `dup2` |
+
+
+## File I/O at a Specified Offset: pread() and pwrite()
+
+These two system calls provide **random-access I/O without modifying the file offset** — essentially a combination of `lseek()` + `read()`/`write()` in a single atomic operation.
+
+```c
+#include <unistd.h>
+
+ssize_t pread(int fd, void *buf, size_t count, off_t offset);
+ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset);
+```
+- **Returns** (same as `read()`/`write()`):
+  - Number of bytes transferred (≥ 0) on success
+  - 0 for `pread()` on EOF
+  - –1 on error
+
+#### Key Differences from `read()`/`write()`
+
+| Feature                  | `read()` / `write()`                  | `pread()` / `pwrite()`                          |
+|--------------------------|---------------------------------------|-------------------------------------------------|
+| I/O location             | Current file offset                   | Explicit `offset` parameter                     |
+| File offset after call   | Advanced by bytes transferred         | **Unchanged**                                   |
+| Number of system calls   | 1 (plus `lseek()` if seeking)         | 1 (seek + I/O combined)                         |
+| Atomicity w.r.t. offset  | Separate `lseek()` can race           | Atomic (no race window)                         |
+
+#### Equivalent (but non-atomic) Sequence for `pread()`
+
+```c
+off_t orig = lseek(fd, 0, SEEK_CUR);   // Save current offset
+lseek(fd, offset, SEEK_SET);           // Move to desired position
+ssize_t s = read(fd, buf, count);      // Perform I/O
+lseek(fd, orig, SEEK_SET);             // Restore original offset
+```
+`pread()/pwrite()` does all this **atomically** in one kernel call.
+
+#### Main Advantages
+
+1. **Thread Safety in Multithreaded Programs**
+   - All threads in a process share the **same file descriptor table** → same file offset for each open file description (see Section 5.4).
+2. **Process Safety with Shared Open File Descriptions**
+   - If multiple processes share the same open file description (e.g., after `fork()`), the file offset is shared.
+   - Again, `pread()`/`pwrite()` prevent races.
+3. **Slight Performance Benefit**
+   - One system call instead of two (`lseek()` + `read()`/`write()`).
+   - Minor savings in system call overhead (usually negligible compared to actual disk I/O time).
