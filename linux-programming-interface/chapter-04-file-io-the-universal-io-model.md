@@ -68,7 +68,6 @@ int open(const char *pathname, int flags, ... /* mode_t mode */);
   | `O_RDONLY` | 0 | Open for reading only |
   | `O_WRONLY` | 1 | Open for writing only |
   | `O_RDWR` | 2 | Open for both reading and writing |
-
 - ⚠️ `O_RDWR` is **not** the same as `O_RDONLY | O_WRONLY` — the latter is invalid.
 - `open()` always uses the **lowest unused file descriptor** in the process.
 - You can force a specific FD (e.g., FD 0 for stdin) like this:
