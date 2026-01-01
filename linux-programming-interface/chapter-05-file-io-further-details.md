@@ -368,3 +368,159 @@ lseek(fd, orig, SEEK_SET);             // Restore original offset
 3. **Slight Performance Benefit**
    - One system call instead of two (`lseek()` + `read()`/`write()`).
    - Minor savings in system call overhead (usually negligible compared to actual disk I/O time).
+
+
+## Scatter-Gather I/O: readv() and writev()
+
+These system calls perform **scatter-gather I/O**: transferring data to/from **multiple non-contiguous buffers** in a **single atomic system call**.
+
+```c
+#include <sys/uio.h>
+
+ssize_t readv(int fd, const struct iovec *iov, int iovcnt);
+ssize_t writev(int fd, const struct iovec *iov, int iovcnt);
+
+// Linux 2.6.30+ and modern BSDs
+ssize_t preadv(int fd, const struct iovec *iov, int iovcnt, off_t offset);
+ssize_t pwritev(int fd, const struct iovec *iov, int iovcnt, off_t offset);
+
+// The `struct iovec`
+struct iovec {
+    void  *iov_base;   // Starting address of buffer
+    size_t iov_len;    // Length of buffer
+};
+```
+- `iov` is an array of these structures.
+- `iovcnt` is the number of elements in the array (≥ 1).
+
+**Limits**:
+- SUSv3 requires at least 16 (`_POSIX_IOV_MAX`).
+- Linux kernel limit: 1024 (`UIO_MAXIOV` → defined as `IOV_MAX` in `<limits.h>`).
+- glibc wrapper handles larger vectors by falling back to a single `read()`/`write()` with a temporary buffer.
+
+#### `readv()` – Scatter Input
+- Reads a **contiguous sequence** of bytes from the file.
+- **Scatters** them sequentially into the buffers: fills `iov[0]` completely, then `iov[1]`, etc.
+- **Atomic**: Entire transfer (file → all buffers) is one uninterruptible operation.
+  - Guarantees contiguous bytes from file, even if other threads/processes change the shared file offset concurrently.
+- Returns: total bytes read (may be less than requested → check return value).
+- Partial read possible → last buffer may be partially filled.
+
+#### `writev()` – Gather Output
+- **Gathers** data from all buffers in order (`iov[0]`, `iov[1]`, ...).
+- Writes them as a **contiguous sequence** to the file.
+- **Atomic**: Entire transfer (all buffers → file) is one uninterruptible operation.
+  - Ensures all data appears contiguously on disk, without interleaving from other processes/threads.
+- Returns: total bytes written (may be less than requested → check return value).
+
+#### `preadv()` and `pwritev()` (Linux ≥ 2.6.30, modern BSDs)
+- Same as `readv()`/`writev()`, but perform I/O at explicit `offset`.
+- **Do not change** the current file offset.
+- Combine benefits of:
+  - Scatter-gather (multiple buffers)
+  - Positioned I/O (`pread`/`pwrite` style → thread-safe, no offset races)
+
+#### Advantages Over Alternatives
+
+| Approach                              | Atomic? | System Calls | Memory Copy Needed? | Convenience |
+|---------------------------------------|---------|--------------|---------------------|-------------|
+| Single `writev()`                     | Yes     | 1            | No                  | High        |
+| Multiple `write()` calls              | No      | Many         | No                  | Low         |
+| Allocate big buffer + single `write()`| Yes     | 1            | Yes (user-space copy) | Low         |
+
+`readv()`/`writev()` are **faster** and **cleaner** because:
+- Fewer system calls (see Section 3.1 on system call overhead).
+- No manual buffer allocation or copying in user space.
+- Atomicity prevents races in concurrent environments.
+
+#### Use Cases
+- Network servers: gathering headers + payload + trailers for output.
+- Reading/writing structured records that span multiple non-adjacent buffers.
+- Multithreaded applications: `preadv()`/`pwritev()` for thread-safe random scatter-gather I/O.
+- High-performance I/O where minimizing syscalls and copies matters.
+
+## Truncating a File: truncate() and ftruncate()
+
+These two system calls **change the size of a regular file** to exactly the specified `length` (in bytes).
+
+```c
+#include <unistd.h>
+
+int truncate(const char *pathname, off_t length);
+int ftruncate(int fd, off_t length);
+```
+- Both return **0** on success, **–1** on error (sets `errno`).
+
+#### Behavior Based on `length`
+| Current file size vs. `length` | Effect |
+|--------------------------------|--------|
+| File **longer** than `length`  | Excess data beyond `length` is **discarded** (lost forever). |
+| File **shorter** than `length` | File is **extended**. The new space is filled with:<br>• **Null bytes** (on most filesystems), **or**<br>• A **file hole**.|
+
+#### Differences Between the Two Calls
+
+| Call          | How file is specified                  | Requirements                              | Notes |
+|---------------|----------------------------------------|-------------------------------------------|-------|
+| `truncate()`  | By **pathname** (string)               | File must be writable; symbolic links are **dereferenced** | Unique: only system call that modifies a file's contents **without** needing an open descriptor (via `open()`, `pipe()`, etc.) |
+| `ftruncate()` | By open **file descriptor** (`fd`)     | `fd` must refer to a file opened for writing | Does **not** change the current file offset |
+
+#### Example Usage
+```c
+// Empty a log file without opening it
+truncate("app.log", 0);
+
+// Or using an open descriptor
+int fd = open("data.bin", O_WRONLY | O_CREAT, 0644);
+ftruncate(fd, 1024 * 1024);  // Ensure at least 1 MiB (extends with hole if needed)
+```
+
+##  Nonblocking I/O
+
+The `O_NONBLOCK` flag changes the behavior of file I/O from **blocking** (default) to **nonblocking**.
+
+#### Two Main Effects of `O_NONBLOCK`
+
+1. **During `open()`**
+   - If the file cannot be opened **immediately**, `open()` fails and returns **–1** (with `errno` set, typically `EAGAIN` or `ENOENT` depending on the case) instead of blocking the calling process.
+   - Most relevant for **FIFOs** (named pipes):
+     - Opening a FIFO for reading normally blocks until another process opens the same FIFO for writing (and vice versa).
+     - With `O_NONBLOCK`, `open()` returns immediately (fails with `ENXIO` if no corresponding opener).
+2. **For subsequent I/O system calls** (`read()`, `write()`, `readv()`, etc.)  
+   - If the operation **cannot complete immediately**, the call either:
+     - Performs a **partial transfer** (returns fewer bytes than requested), or
+     - Fails immediately with `EAGAIN` or `EWOULDBLOCK` (both are synonymous on Linux and most UNIX systems).
+   - The process is **not put to sleep** — it can do other work and retry later.
+
+#### File Types Where `O_NONBLOCK` Matters
+| File Type              | How `O_NONBLOCK` is Set                          | Typical Use Case |
+|-----------------------|--------------------------------------------------|------------------|
+| **Devices** (terminals, ptys, serial ports) | Via `open()` or `fcntl() F_SETFL`                | Prevent blocking on input/output |
+| **Pipes** (anonymous) | Via `fcntl() F_SETFL` (created by `pipe()`)      | Nonblocking pipe I/O |
+| **FIFOs** (named pipes) | Via `open()` (with `O_NONBLOCK` or `O_RDONLY`/`O_WRONLY`) or `fcntl()` | Prevent blocking on open/read/write |
+| **Sockets**            | Via `fcntl() F_SETFL` (created by `socket()`)    | Core of asynchronous network programming |
+| **Regular files**      | Usually **ignored** — kernel buffer cache makes I/O nonblocking anyway (see Chapter 13) | Exception: affects behavior with **mandatory file locking** |
+
+#### Key Points
+- `O_NONBLOCK` is a **file status flag** → can be retrieved/modified on an open descriptor using `fcntl()` `F_GETFL` / `F_SETFL`.
+- For descriptors not created by `open()` (e.g., pipes from `pipe()`, sockets from `socket()`), you **must** use `fcntl()` to enable nonblocking mode.
+- Errors on nonblocking I/O:
+  - `EAGAIN` or `EWOULDBLOCK` → "try again later" (most common).
+  - Partial reads/writes are normal and must be handled (loop until desired amount transferred).
+
+#### Typical Pattern to Enable Nonblocking Mode
+```c
+// At open time (if using open())
+int fd = open("fifo", O_RDWR | O_NONBLOCK);
+
+// Or later on an existing descriptor
+int flags = fcntl(fd, F_GETFL);
+flags |= O_NONBLOCK;
+fcntl(fd, F_SETFL, flags);
+```
+
+#### Why Use Nonblocking Mode?
+- Essential for **responsive programs** (e.g., servers handling multiple clients via `poll()`, `select()`, or `epoll()`).
+- Prevents a single slow/blocked I/O source from stalling the entire process.
+- Foundation for **asynchronous/event-driven** programming.
+
+## I/O on Large Files
