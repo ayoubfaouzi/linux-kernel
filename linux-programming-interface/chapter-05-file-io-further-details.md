@@ -524,3 +524,203 @@ fcntl(fd, F_SETFL, flags);
 - Foundation for **asynchronous/event-driven** programming.
 
 ## I/O on Large Files
+
+This section explains how 32-bit systems handle files larger than 2 GB (the limit imposed by 32-bit `off_t`), and how Linux (and other UNIX systems) implement **Large File Summit (LFS)** extensions.
+
+#### The Problem
+- `off_t` (file offset type) is typically a **signed long**.
+- On 32-bit systems (e.g., x86-32): 32 bits → max value = 2³¹−1 ≈ **2 GB**.
+- Disk drives exceeded 2 GB long ago → need to support **large files** (> 2 GB).
+- On 64-bit systems: `long` is usually 64 bits → natural support up to ~9 exabytes (though filesystem-specific limits may be lower).
+
+#### Solutions: Two Approaches
+
+| Approach                          | How to Enable                                      | Effect                                                                 | Status          |
+|-----------------------------------|----------------------------------------------------|------------------------------------------------------------------------|-----------------|
+| **Transitional LFS API** (obsolete) | Define `_LARGEFILE64_SOURCE`                       | Provides explicit 64-bit versions: `open64()`, `lseek64()`, `fseeko64()`, `stat64()`, `mmap64()`, etc.<br>Uses `off64_t` (64-bit offset type) and `struct stat64` | Obsolete — still works but not recommended |
+| **Preferred: `_FILE_OFFSET_BITS=64`** | Define macro at compile time:<br>`cc -D_FILE_OFFSET_BITS=64 prog.c`<br>or `#define _FILE_OFFSET_BITS 64` in source | **Transparent**: Replaces standard functions/types with 64-bit versions.<br>`off_t` becomes 64-bit<br>`open()` → internally `open64()`<br>`lseek()` → `lseek64()`<br>etc. | **Recommended** — no source code changes needed |
+
+#### Key Points About `_FILE_OFFSET_BITS=64`
+- **No code changes required** — just recompile with the macro.
+- Works only if the program is **cleanly written** (i.e., uses `off_t` for offsets/sizes, not `int` or `long` hard-coded).
+- Automatically enables `O_LARGEFILE` flag in `open()` calls.
+- Required glibc ≥ 2.2 and kernel ≥ 2.4 on 32-bit Linux.
+
+
+#### Filesystem Support Required
+- Most **native Linux filesystems** (ext3, ext4, XFS, Btrfs, etc.) support large files.
+- Some **non-native** do **not**:
+  - **VFAT (FAT32)** → hard 2–4 GB limit
+  - **NFSv2** → hard 2 GB limit
+- Even with LFS enabled, these filesystems cannot store files > 2 GB.
+
+#### Error When Exceeding 32-bit Limits Without LFS
+- Trying to access a >2 GB file with 32-bit functions → `EOVERFLOW` (e.g., from `stat()`).
+
+#### Printing `off_t` Values (Common Pitfall)
+LFS doesn’t fix `printf()` formatting.
+
+**Wrong (if `off_t` is 64-bit)**:
+```c
+printf("offset = %ld\n", offset);  // may truncate on 32-bit or ILP32 systems
+```
+
+**Correct and portable**:
+```c
+printf("offset = %lld\n", (long long) offset);
+```
+- Cast to `long long` and use `%lld`.
+- Same applies to `blkcnt_t` (block count in `struct stat`).
+
+#### Module Compatibility Warning
+- If passing `off_t` or `struct stat` between separately compiled objects (e.g., shared libraries), **all modules must be compiled with the same `_FILE_OFFSET_BITS` setting**.
+- Otherwise → type size mismatch → crashes or corruption.
+
+## The /dev/fd Directory
+
+This section describes a convenient virtual directory that allows processes to refer to their own open file descriptors **as if they were filenames**.
+
+#### `/dev/fd` – Virtual Directory of Open File Descriptors
+- For **each process**, the kernel provides a special directory: **`/dev/fd`**.
+- It contains entries named `/dev/fd/0`, `/dev/fd/1`, `/dev/fd/2`, ..., corresponding to the process’s open file descriptors.
+  - `/dev/fd/0` → standard input (stdin)
+  - `/dev/fd/1` → standard output (stdout)
+  - `/dev/fd/2` → standard error (stderr)
+  - Higher numbers → other open files/sockets/pipes
+
+**Key property**:
+- `open("/dev/fd/n", ...)` is **equivalent** to `dup(n)` — it returns a **new file descriptor** that refers to the **same open file description** as fd `n`.
+  
+Example:
+```c
+int fd = open("/dev/fd/1", O_WRONLY);  // Same as: int fd = dup(1);
+```
+- The `flags` in `open()` are interpreted (e.g., must match access mode: `O_RDONLY`, `O_WRONLY`, etc.).
+- Flags like `O_CREAT`, `O_TRUNC` are **ignored** (meaningless in this context).
+
+#### Linux-Specific Implementation
+- `/dev/fd` is a **symbolic link** to **`/proc/self/fd`**.
+- `/proc/self/fd` is a per-process directory under the Linux `/proc` filesystem.
+- More generally, `/proc/PID/fd/` exists for **every process** with PID, containing symbolic links to all its open files (useful for debugging/monitoring).
+
+#### Main Use Case: Shell Pipelines with Commands Expecting Filenames
+Many commands expect **filename arguments**, not file descriptors or stdin/stdout directly.
+
+**Old hack**: Use a single hyphen (`-`) to mean "use stdin/stdout".
+```bash
+ls | diff - oldfilelist      # diff interprets - as stdin
+```
+**Problems**:
+- Not all programs support `-` this way.
+- Some programs treat `-` as an option delimiter (e.g., `--`).
+- Inconsistent and fragile.
+
+**Better solution**: Use `/dev/fd`
+```bash
+ls | diff /dev/fd/0 oldfilelist   # diff gets stdin as a "filename"
+```
+- Works with **any** program that takes filenames.
+- No special code needed in the program.
+
+#### Convenience Symbolic Links
+For readability, these standard names are provided:
+- `/dev/stdin`  → symlink to `/dev/fd/0`
+- `/dev/stdout` → symlink to `/dev/fd/1`
+- `/dev/stderr` → symlink to `/dev/fd/2`
+
+So you can also write:
+```bash
+ls | diff /dev/stdin oldfilelist
+```
+
+## Creating Temporary Files
+
+This section describes safe, standard ways to create **temporary files** that exist only during a program's runtime and are automatically removed when no longer needed.
+
+#### Why Temporary Files?
+Many programs (e.g., compilers, editors, sort utilities) need scratch space:
+- Files are created temporarily.
+- Should be **unique** (no name collisions).
+- Should be **secure** (no race conditions or guessing).
+- Should be **removed** automatically on program termination or close.
+
+#### 1. `mkstemp()` – Preferred Low-Level Function
+```c
+#include <stdlib.h>
+int mkstemp(char *template);
+```
+- Returns: **file descriptor** on success, **–1** on error.
+
+**How it works**:
+- Caller supplies a **template** string: a pathname ending in exactly `XXXXXX` (6 X's).
+- `mkstemp()` replaces the `XXXXXX` with a **unique string** (e.g., using PID + random chars).
+- Creates and **opens** the file:
+  - Permissions: `0600` (owner read/write only)
+  - Flags: includes `O_EXCL` → guarantees exclusivity (fails if file already exists)
+- Modifies the `template` string in place to contain the actual generated filename.
+- `template` **must be a writable char array** (not a string literal).
+
+**Typical safe usage pattern**:
+```c
+char template[] = "/tmp/myapp_XXXXXX";  // Writable array
+int fd = mkstemp(template);
+if (fd == -1) errExit("mkstemp");
+
+printf("Temp file: %s\n", template);  // Optional: see the name
+
+unlink(template);  // Critical step!
+
+// Now use fd with read(), write(), lseek(), etc.
+// File name disappears immediately from directory
+// But file remains accessible via fd until close()
+
+close(fd);  // File is finally deleted from disk
+```
+
+**Why `unlink()` immediately?**
+- Removes the filename from the directory **right away** → no other process can see or access it.
+- The file remains on disk (and writable) because it's still open (inode reference count > 0).
+- When the last `close()` occurs → kernel deletes the file contents permanently.
+- Ensures cleanup even if program crashes (as long as fd is closed normally).
+
+#### 2. `tmpfile()` – Stdio Version
+```c
+#include <stdio.h>
+FILE *tmpfile(void);
+```
+- Returns: `FILE *` stream on success, `NULL` on error.
+
+**Behavior**:
+- Creates a unique temporary file.
+- Opens it in **read/write** mode (`"w+b"`).
+- Uses `O_EXCL` for safety.
+- **Internally calls `unlink()` immediately** → file is deleted as soon as created.
+- File is automatically removed when:
+  - `fclose()` is called, or
+  - Program terminates normally.
+
+**Usage**:
+```c
+FILE *fp = tmpfile();
+if (fp == NULL) errExit("tmpfile");
+
+// Use fprintf(), fscanf(), fread(), etc.
+fprintf(fp, "Some temporary data\n");
+
+// When done:
+fclose(fp);  // File is automatically deleted
+```
+
+#### Avoid These (Insecure!)
+- `tmpnam()`, `tempnam()`, `mktemp()`
+  - Generate filenames **without creating the file**.
+  - Vulnerable to **race conditions** (TOCTOU: another process could create the file between name generation and `open()`).
+  - Can be guessed or hijacked → security holes.
+
+#### Comparison Table
+
+| Function      | Returns       | Interface       | Auto-unlink?                  | Secure? | Recommended? |
+|---------------|---------------|-----------------|-------------------------------|---------|--------------|
+| `mkstemp()`   | `int fd`      | System calls    | Manual `unlink()` needed      | Yes     | **Best for low-level** |
+| `tmpfile()`   | `FILE *`      | Stdio library   | Automatic (on close/exit)     | Yes     | **Best for stdio** |
+| `mktemp()` etc. | `char *` name | Name only       | No                            | No      | Avoid        |
