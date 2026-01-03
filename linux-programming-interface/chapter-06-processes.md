@@ -123,3 +123,172 @@ This section describes the **virtual memory layout** of a typical UNIX/Linux pro
 +-------------------+
 Lower addresses (0x0)
 ```
+
+## Virtual Memory Management
+
+#### Core Concept: Locality of Reference
+Programs typically exhibit:
+- **Spatial locality**: Access memory addresses close to recently accessed ones (e.g., sequential code or data traversal).
+- **Temporal locality**: Re-access the same memory soon after (e.g., loops).
+
+➡️ A program can run even if **only part** of its address space is in RAM at once.
+
+#### Virtual Memory Organization
+- Memory is divided into fixed-size **pages** (virtual pages).
+- RAM is divided into matching **page frames**.
+- Only a subset of a process’s pages (the **resident set**) is in RAM at any time.
+- Unused pages are stored in the **swap area** on disk.
+- When a process accesses a non-resident page → **page fault** → kernel loads the page from swap into RAM (suspending the process briefly).
+
+#### Page Table
+- Each process has its own **page table** mapping virtual addresses to:
+  - Physical page frame (if resident), or
+  - Location on disk (swap).
+- Unused virtual address ranges have **no page-table entry** → access causes **SIGSEGV** (segmentation fault).
+
+#### Dynamic Virtual Address Space Changes
+The valid virtual address range grows/shrinks during a process’s lifetime via:
+- Stack growth (downward)
+- Heap allocation (`brk()`/`sbrk()`, `malloc()` family – Chapter 7)
+- System V shared memory (`shmat()`/`shmdt()` – Chapter 48)
+- Memory mappings (`mmap()`/`munmap()` – Chapter 49)
+
+#### Hardware Support
+- **Paged Memory Management Unit (PMMU)**:
+  - Translates virtual → physical addresses.
+  - Notifies kernel on page faults.
+
+#### Advantages of Virtual Memory
+
+| Advantage                              | Explanation                                                                 |
+|----------------------------------------|-----------------------------------------------------------------------------|
+| **Process isolation**                  | Each process’s page table points to distinct physical pages → one process cannot read/modify another’s memory or the kernel’s. |
+| **Memory sharing**                     | Page tables of different processes can point to the **same** physical pages:<br>• Implicit: multiple processes running same program share **text segment** (code) and shared libraries.<br>• Explicit: via `shmget()`/`mmap()` for IPC. |
+| **Memory protection**                  | Page-table entries mark pages as read/write/execute.<br>Different processes can have different permissions on shared pages (e.g., one read-only, another read-write). |
+| **Simplified programming**             | Programmers, compiler, linker don’t worry about physical RAM layout.       |
+| **Faster program startup / smaller footprint** | Only needed pages loaded → program can be larger than RAM.                 |
+| **Better CPU utilization**             | More processes fit in RAM simultaneously → higher chance CPU always has work. |
+
+## The Stack and Stack Frames
+
+- On **Linux x86-32** (and most UNIX/Linux architectures):
+  - Stack resides at the **high end** of the process's virtual address space.
+  - Grows **downward** (toward lower addresses, i.e., toward the heap).
+- A dedicated CPU register — the **stack pointer (SP)** — always points to the **current top** of the stack.
+- Despite growing downward, the "top" is still the **growing end** (abstract view).
+- Exception: `HP PA-RISC` Linux uses an **upward-growing** stack 🤷‍♀️.
+- Growth direction is a **hardware/implementation detail**.
+
+#### Stack Behavior in Virtual Memory
+- Logically: Stack **grows** when functions are called (new frames added) and **shrinks** when they return (frames removed).
+- Physically: On most systems, the **stack segment** only grows in virtual memory — it does **not shrink** when frames are deallocated.
+  - Freed space is simply **reused** for future stack frames.
+  - The kernel may extend the stack segment downward as needed (via page faults).
+
+#### User Stack vs. Kernel Stack
+- **User stack**: Described here — in user virtual memory, used for normal function calls.
+- **Kernel stack**: Separate per-process stack in **protected kernel memory**.
+  - Used when executing system calls (kernel code can't safely use the user stack).
+  - Fixed size (typically 8–16 KB per thread on Linux).
+
+#### Contents of a Stack Frame
+Each time a function is called, a new **stack frame** (also called activation record) is pushed onto the stack. It typically contains:
+
+1. **Function parameters and local (automatic) variables**
+   - Created automatically on function entry.
+   - Destroyed automatically on return → distinguishes them from `static`/`global` variables (which persist).
+
+2. **Call linkage / return information**
+   - Saved CPU registers, especially:
+     - **Program counter (PC / EIP)** — address to return to after function completes.
+     - **Frame pointer (FP / EBP)** — points to base of current frame (used for accessing locals/params).
+     - Other caller-saved registers.
+   - Enables proper return to the calling function and restoration of its state.
+
+#### Nested and Recursive Calls
+- Functions can call other functions → multiple stack frames exist simultaneously.
+- Recursive functions → multiple frames for the **same function**.
+
+#### Key Conceptual Diagram (Typical x86-32 Process Virtual Memory Layout)
+```
+High addresses
++-------------------+  ← Stack top (grows downward)
+|   Stack frames    |
+|     ...           |
+|  square() frame   |
+|  main() frame     |
++-------------------+
+|     (unused)      |
++-------------------+  ← Heap (grows upward via brk/sbrk or mmap)
+|       Heap        |
++-------------------+
+|   Data segment    |  (.data, .bss – globals, static vars)
++-------------------+
+|   Text segment    |  (executable code)
++-------------------+
+Low addresses (0x0)
+```
+
+## Command-Line Arguments (argc, argv)
+
+Every C program must have a `main()` function, which is the **entry point** for execution.
+
+There are two standard forms:
+```c
+int main(int argc, char *argv[]);
+// or equivalently:
+int main(int argc, char **argv);
+```
+
+- **`argc`** (argument count): Integer indicating the **number of command-line arguments**, including the program name.
+- **`argv`** (argument vector): Array of pointers to **null-terminated strings**.
+  - `argv[0]`: Conventionally the **program name** (as invoked).
+  - `argv[1]` to `argv[argc-1]`: The actual arguments.
+  - `argv[argc]`: Always `NULL` (terminates the array).
+
+Example:
+```bash
+$ ./myprog hello world "foo bar"
+```
+→ `argc = 4`  
+→ `argv[0] = "./myprog"`  
+→ `argv[1] = "hello"`  
+→ `argv[2] = "world"`  
+→ `argv[3] = "foo bar"`  
+→ `argv[4] = NULL`
+
+#### Useful Trick: Multiple Names for One Program
+- Create **hard links** (or symbolic links) to the same executable.
+- The program checks `argv[0]` and behaves differently depending on the name used to invoke it.
+
+**Real-world example**:
+- `gzip`, `gunzip`, and `zcat` are often **links to the same binary**.
+- The program examines `argv[0]` to decide whether to compress, decompress, or print to stdout.
+
+⚠️ Must handle unexpected link names (e.g., user creates their own link).
+
+#### Memory Layout of `argc` and `argv`
+- The strings pointed to by `argv` (including `argv[0]`) are stored in a **contiguous memory region** just above the **process stack**.
+- The `argv` array itself (list of pointers) and the **environment list** (`environ`) also reside in this area.
+- All strings are **null-terminated** (`\0`).
+
+#### Limitations and Portability
+- `argc` and `argv` are only directly available in `main()`.
+- To use them elsewhere:
+  - **Portable**: Pass `argv` as a parameter or store in a global variable.
+- **Non-portable methods** (Linux/glibc-specific):
+  - Read `/proc/PID/cmdline` or `/proc/self/cmdline` (null-separated arguments).
+  - Use glibc globals (with `#define _GNU_SOURCE`):
+    - `program_invocation_name` → full path used to invoke program.
+    - `program_invocation_short_name` → basename (e.g., "myprog").
+
+#### Size Limits on Arguments + Environment
+- Defined by **ARG_MAX** (in `<limits.h>`) or via `sysconf(_SC_ARG_MAX)`.
+- SUSv3 minimum: **4096 bytes** (`_POSIX_ARG_MAX`).
+- Most systems allow much more.
+- Whether overhead (pointers, alignment, null bytes) counts toward limit is implementation-defined.
+
+**Linux-specific details**:
+- Historically: Fixed at **131,072 bytes** (32 pages on x86-32), including overhead.
+- Since **kernel 2.6.23**: Limited to **¼ of the soft RLIMIT_STACK** at time of `execve()`.
+  - Allows much larger argument/environment space on modern systems.
