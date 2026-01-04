@@ -292,3 +292,164 @@ $ ./myprog hello world "foo bar"
 - Historically: Fixed at **131,072 bytes** (32 pages on x86-32), including overhead.
 - Since **kernel 2.6.23**: Limited to **¼ of the soft RLIMIT_STACK** at time of `execve()`.
   - Allows much larger argument/environment space on modern systems.
+
+##  Environment List
+
+- Each process has an **environment list**: an array of strings in the form `name=value`.
+- These are called **environment variables**.
+- When a process is created (via `fork()`), it **inherits a copy** of its parent's environment.
+- Changes to the environment are **private**:
+  - Parent → child: one-way transfer at creation time.
+  - After creation, each process can modify its own copy independently.
+
+#### Common Uses
+1. **Shell → child programs**:
+   - Shell places values (e.g., `PATH`, `HOME`, `SHELL`) in its environment.
+   - All commands executed by the shell inherit these (e.g., many programs use `SHELL` to know which shell to spawn).
+
+2. **Configuring library/application behavior**:
+   - Example: `POSIXLY_CORRECT` changes `getopt()` parsing rules.
+   - Allows user control without recompiling or relinking.
+
+#### Shell Commands for Managing Environment
+| Shell Type               | Add permanently to shell environment                     | One-shot (for single command)       | Remove             | Display            |
+|--------------------------|----------------------------------------------------------|-------------------------------------|--------------------|--------------------|
+| Bash/Korn/Bourne         | `export NAME=value` or `export NAME` after setting       | `NAME=value program`                | `unset NAME`       | `printenv` or `env` |
+| C shell                  | `setenv NAME value`                                      | Not directly supported              | `unsetenv NAME`    | `printenv`         |
+
+- `env` command: Run a program with a **modified** environment (add/remove variables).
+  - `env`: Print all environment variables (same as printenv)
+  - `env VAR=value command`: Run command with modified environment
+  - `env -i command`: Run command with empty environment
+  - `env -u VAR command`: Run command with VAR removed from environm
+- `printenv`: Show current environment (unsorted order — implementation-dependent).
+
+Linux-specific: View any process's environment via `/proc/PID/environ` (null-separated strings).
+
+#### Accessing the Environment in C Programs
+
+1. **Global variable `environ`** (preferred, portable):
+   ```c
+   extern char **environ;  // NULL-terminated array of "name=value" strings
+   ```
+   - Like `argv`, but no count variable (loop until `NULL`).
+   - Example: Listing 6-3 prints all environment variables (equivalent to `printenv`).
+
+2. **Third argument to `main()`** (widely available but **non-standard** — avoid):
+   ```c
+   int main(int argc, char *argv[], char *envp[])
+   ```
+   - `envp` works like `environ`, but scope limited to `main()`.
+
+3. **Retrieve single variable**:
+   ```c
+   char *getenv(const char *name);  // Returns pointer to value or NULL
+   ```
+   - **Do not modify** the returned string (it's part of the actual environment).
+   - On some systems, return value may be in static buffer → copy if preserving across calls.
+
+#### Modifying the Environment
+
+| Function                      | Purpose                                                                 | Key Notes                                                                 |
+|-------------------------------|-------------------------------------------------------------------------|---------------------------------------------------------------------------|
+| `int putenv(char *string)`    | Add/modify: pass `"name=value"` string                                  | String becomes part of environment → **do not** use stack variables       |
+| `int setenv(const char *name, const char *value, int overwrite)` | Add/modify safely                                                       | Allocates memory, copies strings → safe to modify inputs afterward        |
+| `int unsetenv(const char *name)` | Remove variable                                                         | Name must not contain '='                                                 |
+| `int clearenv(void)`          | Erase entire environment (non-standard, glibc/BSD)                      | Sets `environ = NULL` → subsequent `setenv()`/`putenv()` rebuild it       |
+
+- `setenv()` is generally **preferred** over `putenv()` because it's safer.
+- `clearenv()` is useful for security (e.g., in set-user-ID programs) but **not in SUSv3**.
+  - SUSv3 alternative: iterate over `environ` and `unsetenv()` each variable.
+
+#### Memory Layout Note
+- `argv` strings, `environ` strings, and the pointer arrays reside in a **contiguous region** just above the stack.
+- Subject to size limits (related to `ARG_MAX` and stack limit).
+
+## Performing a Nonlocal Goto: setjmp() and longjmp()
+
+- Standard C `goto` is limited: **cannot jump out of the current function**.
+- Common scenario: **error handling in deeply nested calls**.
+  - Detect error deep in call stack.
+  - Want to abort the entire operation and resume in a high-level function (e.g., `main()`).
+- Normal approach: return error codes up the call chain → verbose, repetitive.
+- `setjmp()`/`longjmp()` allow **direct jump** back to a known point, simplifying some error-handling logic.
+```c
+#include <setjmp.h>
+
+int setjmp(jmp_buf env);          // Returns 0 directly, nonzero after longjmp()
+void longjmp(jmp_buf env, int val);  // Never returns
+```
+
+#### How They Work
+1. **`setjmp(env)`**:
+   - Saves current execution context (program counter, stack pointer, registers) into `env`.
+   - Returns **0** when called directly.
+   - Marks a **jump target**.
+
+2. **`longjmp(env, val)`**:
+   - Restores context from `env`.
+   - **Unwinds the stack** (removes intervening frames).
+   - Makes it appear as if `setjmp()` is **returning again**, this time with value `val`.
+   - If `val == 0`, `setjmp()` returns **1** instead (to avoid confusion with initial call).
+
+➡️ Execution continues **immediately after the original `setjmp()` call**, as if it just returned.
+
+#### Typical Usage Pattern
+```c
+jmp_buf env; // Usually declared global or passed down (to be visible to deep functions).
+
+if (setjmp(env) == 0) {
+    // Normal execution path
+    deep_function();  // may call longjmp(env, 1) on error
+} else {
+    // Execution resumes here after longjmp()
+    printf("Recovered from deep error\n");
+}
+```
+
+#### Restrictions on `setjmp()` Usage (SUSv3 / C99)
+`setjmp()` can only appear in very simple contexts:
+- Alone in `if`, `switch`, `while`, etc.
+- As `!setjmp(...)`
+- In comparison with integer constant: `setjmp(env) != 0`
+- As standalone call (not part of larger expression)
+
+**Invalid**:
+```c
+int x = setjmp(env);  // WRONG – not allowed by standard
+```
+
+👉 Reason: Normal function implementation of `setjmp()` can't save temporary values in complex expressions — optimizer might break restoration.
+
+#### Dangers and Pitfalls
+
+1. **Abusing `longjmp()` into a dead function**:
+   - Call `setjmp()` in function X → return from X → call `longjmp()` to X's `env`.
+   - Stack frame for X is gone → **undefined behavior** (crash, infinite loop, corruption).
+
+2. **Nested signal handlers**:
+   - `longjmp()` from a signal handler invoked during another handler → **undefined behavior**.
+
+3. **Interaction with optimizing compilers** (Listing 6-6):
+   - Optimizers assume normal control flow.
+   - After `longjmp()`, local variables may be restored from **old register values**.
+   - Example:
+     - Normal compile: variables retain post-`setjmp()` values.
+     - Optimized compile: non-`volatile` variables revert to pre-`setjmp()` values.
+   - **Fix**: Declare affected local variables as **`volatile`**:
+     ```c
+     volatile int vvar;     // Prevents register optimization
+     register int rvar;     // Explicit register hint – still risky
+     ```
+
+   - gcc warns with `-Wextra`: "variable might be clobbered by `longjmp()`".
+
+#### Best Practices and Warnings
+- Use `volatile` on all local variables (of optimizable types: int, pointers, etc.) in the function containing `setjmp()`.
+- **Avoid `setjmp()`/`longjmp()` when possible**:
+  - Makes code harder to read and maintain (nonlocal control flow).
+  - Reduces portability due to optimizer issues.
+  - Prefer structured error handling (return codes, exceptions in other languages).
+- Still useful in rare cases:
+  - Signal handlers (`sigsetjmp()`/`siglongjmp()` – covered later).
+  - Certain low-level or performance-critical code.
