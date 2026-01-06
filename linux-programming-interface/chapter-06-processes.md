@@ -108,12 +108,12 @@ This section describes the **virtual memory layout** of a typical UNIX/Linux pro
 |  virtual memory)  | region ( /proc/ksyms in kernel 2.4 and earlier)
 +-------------------+  
 |  argv, environ    | 
-+-------------------+  ← Top of virtual address space
++-------------------+  <- Top of virtual address space
 |     Stack         |  (grows downward)
 +-------------------+
 |     ...           |
-+-------------------+
-|      Heap         |  (grows upward) ← program break (brk/sbrk)
++-------------------+  <- program break (brk/sbrk)
+|      Heap         |  (grows upward)
 +-------------------+  <- end
 | Uninitialized data (bss)
 +-------------------+  <- edata
