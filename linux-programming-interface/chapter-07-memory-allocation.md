@@ -115,14 +115,86 @@ if (new_memory == (void *)-1) {
 3. Freeing a **contiguous region at the top** → program break **decreases** (glibc shrinks heap).
 
 #### To `free()` or Not to `free()`?
+
 - When a process terminates, **all heap memory is automatically reclaimed** by the kernel.
 - Many programs **omit `free()`** calls for memory held until exit:
   - Saves CPU time (especially with many small allocations).
   - Simpler code.
-
 - **Reasons to explicitly `free()`**:
   - Improves **readability and maintainability**.
   - Essential when using **memory leak detectors** (e.g., valgrind, mtrace) — unfreed memory is reported as a leak.
   - Good habit for long-running programs or when memory usage patterns vary.
 
 ### Implementation of malloc() and free()
+
+#### How `malloc()` Works (Simplified)
+1. **Search free list** for a suitable block:
+   - Uses strategies like **first-fit** or **best-fit**.
+   - If exact match → return it.
+   - If larger → **split** it: return requested size, leave remainder on free list.
+
+2. **No suitable block** → grow heap:
+   - Calls `sbrk()` to increase program break.
+   - Allocates in **larger chunks** (multiples of page size) to reduce system call overhead.
+   - Excess goes onto free list.
+
+#### How `free()` Works and the "Hidden Header" Trick
+- `malloc()` allocates **extra bytes** at the start of each block to store metadata:
+  - At minimum: an **integer** with the **block size**.
+  - Pointer returned to caller points **just past** this header.
+  <p align="center"><img src="./assets/malloc-size-of-block.png" width="400px" height="auto"></p>
+
+- When freeing:
+  - `free()` uses the hidden size field to know how many bytes to return to the free list.
+  - Inserts the block into a **doubly linked free list** by overwriting the **beginning bytes of the block itself** with `prev` and `next` pointers'
+  <p align="center"><img src="./assets/free-list-block.png" width="400px" height="auto"></p>
+
+Over time, allocated and free blocks become **intermingled** in the heap.
+  <p align="center"><img src="./assets/intermingled-blocks.png" width="400px" height="auto"></p>
+
+👉 This design is efficient but fragile — the heap is full of hidden control structures that the program must **never touch**.
+
+#### Common (and Dangerous) Programming Errors
+Because C allows arbitrary pointer arithmetic, it's easy to corrupt `malloc`'s internal structures:
+
+| Error | Consequence |
+|-------|-------------|
+| **Buffer overflow** (write past end of allocated block) | Overwrite next block's size/header → corruption of free list |
+| **Off-by-one** or faulty pointer arithmetic | Accidentally modify hidden size field or free-list pointers |
+| **Double free** (`free(ptr)` twice) | Corrupts free list → crash or unpredictable behavior (glibc often SEGVs) |
+| **Free invalid pointer** (not from `malloc()`, or corrupted) | Undefined behavior — heap corruption |
+| **Memory leak** (forget to `free()` in long-running program) | Heap grows until virtual memory exhausted → future `malloc()` fails |
+
+Example of disaster:
+- Overwrite a block's hidden size to be larger than actual.
+- `free()` that block → records oversized block on free list.
+- Later `malloc()` → allocates overlapping regions → two pointers to overlapping memory → silent data corruption.
+
+#### Rules to Avoid Heap Corruption
+1. **Never access bytes outside** an allocated block (no off-by-one, no bad loops).
+2. **Never double-free** the same pointer.
+3. **Never free** a pointer not returned by `malloc()`/`calloc()`/`realloc()`.
+4. **Always free** memory in long-running programs (shells, daemons) to prevent **memory leaks**.
+
+#### glibc Tools for Detecting `malloc()` Bugs
+
+| Tool | How to Use | Purpose |
+|------|------------|---------|
+| `MALLOC_TRACE` + `mtrace()`/`muntrace()` | Set `MALLOC_TRACE=/path/to/file`, call `mtrace()` in code, analyze with `mtrace` script | Logs all malloc/free calls → find leaks/unmatched frees |
+| `mcheck()`/`mprobe()` | Link with `-lmcheck` | Runtime consistency checks (e.g., buffer overruns) |
+| `MALLOC_CHECK_` environment variable | `MALLOC_CHECK_=1` (diagnostic) or `2` (abort on error) | Simple, no recompilation needed; catches common errors fast |
+| **Note**: Ignored in set-user-ID/set-group-ID programs for security.
+
+#### Third-Party Malloc Debugging Libraries
+Replace standard `malloc` by linking against a debugging library (for development only — slower, more memory):
+
+- **Electric Fence** – uses virtual memory to catch overruns immediately.
+- **dmalloc** – extensive checking and logging.
+- **Valgrind** (especially **Memcheck**) – industry standard; catches leaks, overruns, invalid frees, etc., without recompiling.
+- **Insure++** – commercial tool with deep checking.
+
+#### Non-Portable glibc Extensions for Monitoring/Control
+- `mallopt()` – Tune `malloc` behavior (e.g., threshold for shrinking heap, max size before using `mmap()`).
+- `mallinfo()` – Returns stats (heap usage, free chunks, etc.).
+
+**Not portable** — parameters and availability vary across UNIX systems.
