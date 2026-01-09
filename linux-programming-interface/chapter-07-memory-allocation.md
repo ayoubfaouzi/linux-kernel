@@ -198,3 +198,146 @@ Replace standard `malloc` by linking against a debugging library (for developmen
 - `mallinfo()` – Returns stats (heap usage, free chunks, etc.).
 
 **Not portable** — parameters and availability vary across UNIX systems.
+
+### Other Methods of Allocating Memory on the Heap
+
+#### 1. `calloc()` – Allocate and Zero-Initialize an Array
+```c
+#include <stdlib.h>
+void *calloc(size_t numitems, size_t size);
+```
+- Allocates space for `numitems` objects, each of `size` bytes.
+- Total bytes: `numitems × size` (overflow-checked on modern glibc).
+- **Initializes all bytes to 0** (unlike `malloc()`).
+- Returns pointer to block or `NULL` on failure.
+
+**Typical use**:
+```c
+struct myStruct *p = calloc(1000, sizeof(struct myStruct));
+if (p == NULL) errExit("calloc");
+```
+- Equivalent to `malloc(1000 * sizeof(struct myStruct))` + `memset(..., 0, ...)`, but atomic and slightly more efficient.
+
+#### 2. `realloc()` – Resize a Previously Allocated Block
+```c
+#include <stdlib.h>
+void *realloc(void *ptr, size_t size);
+```
+- Changes the size of the block pointed to by `ptr` (previously returned by `malloc()`, `calloc()`, or `realloc()`) to `size` bytes.
+- Returns pointer to the (possibly moved) resized block, or `NULL` on error.
+- **Key behaviors**:
+  - If `size` > old size → additional bytes are **uninitialized**.
+  - If `size` < old size → block is shrunk (excess returned to free list).
+  - If `ptr == NULL` → behaves like `malloc(size)`.
+  - If `size == 0` → behaves like `free(ptr)` then `malloc(0)`.
+
+**How resizing works** (glibc strategy):
+- If possible: **extend in place** (coalesce with next free block or grow heap via `sbrk()`).
+- If not possible (e.g., block in middle of heap): **allocate new block**, copy data, free old block → expensive 🫤!
+
+**⚠️: May move the block**
+- Returned pointer may differ from `ptr`.
+- All pointers into the old block (except offset from start) become **invalid**.
+
+**Safe usage pattern** (avoid losing pointer on failure):
+```c
+void *nptr = realloc(ptr, newsize);
+if (nptr == NULL) {
+    // Handle error — original ptr is still valid!
+} else {
+    ptr = nptr;  // Update only on success
+}
+```
+
+**Advice**: Minimize `realloc()` calls — frequent resizing (especially growing) is CPU-intensive.
+
+#### 3. Aligned Memory Allocation
+
+Some applications (e.g., vectorized code, direct I/O) require memory aligned on larger boundaries than the default (usually 8/16 bytes).
+
+##### a. `memalign()` (glibc/non-standard)
+```c
+#include <malloc.h>
+void *memalign(size_t boundary, size_t size);
+```
+- Allocates `size` bytes aligned on a multiple of `boundary` (must be power of 2).
+- Returns aligned pointer or `NULL` on error.
+- **Not in SUSv3**, availability varies.
+- Can be freed with `free()` on glibc (safe).
+
+##### b. `posix_memalign()` (standardized in SUSv3)
+```c
+#include <stdlib.h>
+int posix_memalign(void **memptr, size_t alignment, size_t size);
+```
+- Allocates `size` bytes aligned on `alignment`.
+- `alignment` must be power of 2 **and** multiple of `sizeof(void *)` (typically 4 or 8).
+- Stores pointer in `*memptr`.
+- Returns **0** on success, or **error code** (e.g., `EINVAL`, `ENOMEM`) on failure — **not -1**.
+
+**Example** (allocate 65,536 bytes on 4096-byte boundary):
+```c
+void *memptr;
+int s = posix_memalign(&memptr, 1024 * sizeof(void *), 65536);
+if (s != 0) handle_error(s);  // e.g., EINVAL or ENOMEM
+```
+
+- Memory can be freed with `free(memptr)`.
+
+#### Summary Table
+
+| Function             | Purpose                              | Initializes? | Can Move Block? | Special Notes                                      |
+|----------------------|--------------------------------------|--------------|-----------------|----------------------------------------------------|
+| `malloc(size)`       | General allocation                   | No           | N/A             | Uninitialized, default alignment                   |
+| `calloc(n, size)`    | Array of n items, zeroed             | Yes (all 0)  | N/A             | Safer for arrays/structs                           |
+| `realloc(ptr, size)` | Resize existing block                | No (new bytes) | Yes           | Expensive if relocation needed; use return value    |
+| `memalign(boundary, size)` | Aligned allocation (non-standard) | No           | N/A             | glibc-specific header, power-of-2 boundary         |
+| `posix_memalign()`   | Aligned allocation (standard)        | No           | N/A             | Returns error code, stricter alignment rules       |
+
+## Allocating Memory on the Stack: alloca()
+
+```c
+#include <alloca.h>    // Or <stdlib.h> on some systems
+void *alloca(size_t size);
+```
+- Allocates `size` bytes of memory **within the current function's stack frame**.
+- Returns a pointer to the allocated block (no `NULL` on failure — see risks below).
+- Memory is **automatically freed** when the function returns (stack frame is popped).
+
+**Key differences from `malloc()`**:
+- **Do NOT** call `free()` on `alloca()`-allocated memory (would corrupt stack).
+- **Cannot** use `realloc()` to resize it.
+- No explicit deallocation needed.
+
+#### How `alloca()` Works
+- Implemented as **inline compiler code**: simply subtracts `size` from the stack pointer (on downward-growing stacks).
+- Allocates space **above** the current frame (toward higher addresses, but within the frame).
+- Extremely **fast**:
+  - No system calls.
+  - No free-list maintenance.
+- Memory is reclaimed automatically when the function returns (stack pointer restored).
+
+#### Advantages Over `malloc()`
+| Advantage | Explanation |
+|-----------|-------------|
+| **Speed** | Inline adjustment of stack pointer — much faster than `malloc()`'s bookkeeping. |
+| **Automatic cleanup** | Freed on function return — no need to track and `free()` on all exit paths. Simplifies code. |
+| **No memory leaks with nonlocal jumps** | Perfect with `longjmp()` or `siglongjmp()` (e.g., from signal handlers): as stack unwinds, all `alloca()` memory is automatically discarded. Impossible to leak. |
+| **No fragmentation** | Stack memory is contiguous and reused per call. |
+
+#### Risks and Limitations
+- **No error checking**:
+  - If request exceeds available stack space → **stack overflow**.
+  - Behavior is **undefined**: may crash immediately (`SIGSEGV`), corrupt data, or cause subtle bugs.
+  - No `NULL` return to signal failure (unlike `malloc()`).
+- **Cannot use in function arguments** (dangerous!):
+- **Portability**:
+  - **Not in SUSv3** (not standardized).
+  - Available on most UNIX systems (Linux/glibc, BSD, etc.), but header may be `<stdlib.h>` on some.
+- **Stack size is limited** (typically 8 MB on Linux) → not suitable for large allocations.
+
+#### When to Use `alloca()`
+- Small, temporary buffers needed only until function return.
+- Performance-critical code where allocation speed matters.
+- Complex functions with many return paths (avoids manual `free()` on each path).
+- Especially useful with `longjmp()`/`siglongjmp()` in signal handlers or error recovery (guarantees no leaks).
