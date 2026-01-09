@@ -48,6 +48,7 @@ if (new_memory == (void *)-1) {
 ```
 
 #### Important Limitations and Dangers
+
 - **Never set break below initial value** (just after `.bss`):
   - Can make parts of `.data` or `.bss` inaccessible → likely **segmentation fault** (`SIGSEGV`).
 - Upper limit depends on:
@@ -61,6 +62,7 @@ if (new_memory == (void *)-1) {
 ### Allocating Memory on the Heap: malloc() and free()
 
 #### Advantages of `malloc()` over `brk()`/`sbrk()`
+
 - **Standardized** in the C language (ANSI C / SUSv3) → portable across all UNIX/POSIX systems.
 - **Thread-safe** — safe to use in multithreaded programs (glibc implementation uses locks).
 - **Fine-grained allocation** — can request memory in **small units** (bytes), not page-sized chunks.
@@ -69,10 +71,12 @@ if (new_memory == (void *)-1) {
 #### Core Functions
 
 1. **`malloc()`**
+
    ```c
    #include <stdlib.h>
    void *malloc(size_t size);
    ```
+
    - Allocates `size` bytes of **uninitialized** memory on the heap.
    - Returns a **properly aligned** pointer (usually 8- or 16-byte boundary) suitable for any C data type.
    - Returns `NULL` on failure (e.g., out of memory) and sets `errno` (typically `ENOMEM`).
@@ -84,6 +88,7 @@ if (new_memory == (void *)-1) {
    #include <stdlib.h>
    void free(void *ptr);
    ```
+
    - Deallocates a block previously returned by `malloc()`, `calloc()`, `realloc()`, etc.
    - If `ptr == NULL`, does **nothing** (safe to call).
    - **Undefined behavior** if:
@@ -92,6 +97,7 @@ if (new_memory == (void *)-1) {
      - `ptr` is corrupted (e.g., buffer overflow into header)
 
 #### How `free()` Manages the Program Break
+
 - **Usually does NOT lower the program break** — instead:
   - Adds the freed block to an internal **free list**.
   - Coalesces adjacent free blocks to reduce fragmentation.
@@ -105,11 +111,13 @@ if (new_memory == (void *)-1) {
   - Threshold: typically ~128 KB (tunable via `mallopt()`).
 
 #### Demonstration Program (Listing 7-1: `free_and_sbrk`)
+
 - Allocates `numAllocs` blocks of `blockSize` bytes.
 - Frees blocks in a configurable pattern.
 - Prints program break before/after allocation and after freeing.
 
 **Key Observations from Examples**:
+
 1. Freeing **scattered** blocks (e.g., every 2nd block) → **no change** in program break.
 2. Freeing **all but the last** blocks → still **no change** (top block not free).
 3. Freeing a **contiguous region at the top** → program break **decreases** (glibc shrinks heap).
@@ -128,6 +136,7 @@ if (new_memory == (void *)-1) {
 ### Implementation of malloc() and free()
 
 #### How `malloc()` Works (Simplified)
+
 1. **Search free list** for a suitable block:
    - Uses strategies like **first-fit** or **best-fit**.
    - If exact match → return it.
@@ -139,6 +148,7 @@ if (new_memory == (void *)-1) {
    - Excess goes onto free list.
 
 #### How `free()` Works and the "Hidden Header" Trick
+
 - `malloc()` allocates **extra bytes** at the start of each block to store metadata:
   - At minimum: an **integer** with the **block size**.
   - Pointer returned to caller points **just past** this header.
@@ -150,27 +160,31 @@ if (new_memory == (void *)-1) {
   <p align="center"><img src="./assets/free-list-block.png" width="400px" height="auto"></p>
 
 Over time, allocated and free blocks become **intermingled** in the heap.
+
   <p align="center"><img src="./assets/intermingled-blocks.png" width="400px" height="auto"></p>
 
 👉 This design is efficient but fragile — the heap is full of hidden control structures that the program must **never touch**.
 
 #### Common (and Dangerous) Programming Errors
+
 Because C allows arbitrary pointer arithmetic, it's easy to corrupt `malloc`'s internal structures:
 
-| Error | Consequence |
-|-------|-------------|
-| **Buffer overflow** (write past end of allocated block) | Overwrite next block's size/header → corruption of free list |
-| **Off-by-one** or faulty pointer arithmetic | Accidentally modify hidden size field or free-list pointers |
-| **Double free** (`free(ptr)` twice) | Corrupts free list → crash or unpredictable behavior (glibc often SEGVs) |
-| **Free invalid pointer** (not from `malloc()`, or corrupted) | Undefined behavior — heap corruption |
-| **Memory leak** (forget to `free()` in long-running program) | Heap grows until virtual memory exhausted → future `malloc()` fails |
+| Error                                                        | Consequence                                                              |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| **Buffer overflow** (write past end of allocated block)      | Overwrite next block's size/header → corruption of free list             |
+| **Off-by-one** or faulty pointer arithmetic                  | Accidentally modify hidden size field or free-list pointers              |
+| **Double free** (`free(ptr)` twice)                          | Corrupts free list → crash or unpredictable behavior (glibc often SEGVs) |
+| **Free invalid pointer** (not from `malloc()`, or corrupted) | Undefined behavior — heap corruption                                     |
+| **Memory leak** (forget to `free()` in long-running program) | Heap grows until virtual memory exhausted → future `malloc()` fails      |
 
 Example of disaster:
+
 - Overwrite a block's hidden size to be larger than actual.
 - `free()` that block → records oversized block on free list.
 - Later `malloc()` → allocates overlapping regions → two pointers to overlapping memory → silent data corruption.
 
 #### Rules to Avoid Heap Corruption
+
 1. **Never access bytes outside** an allocated block (no off-by-one, no bad loops).
 2. **Never double-free** the same pointer.
 3. **Never free** a pointer not returned by `malloc()`/`calloc()`/`realloc()`.
@@ -178,14 +192,16 @@ Example of disaster:
 
 #### glibc Tools for Detecting `malloc()` Bugs
 
-| Tool | How to Use | Purpose |
-|------|------------|---------|
-| `MALLOC_TRACE` + `mtrace()`/`muntrace()` | Set `MALLOC_TRACE=/path/to/file`, call `mtrace()` in code, analyze with `mtrace` script | Logs all malloc/free calls → find leaks/unmatched frees |
-| `mcheck()`/`mprobe()` | Link with `-lmcheck` | Runtime consistency checks (e.g., buffer overruns) |
-| `MALLOC_CHECK_` environment variable | `MALLOC_CHECK_=1` (diagnostic) or `2` (abort on error) | Simple, no recompilation needed; catches common errors fast |
+| Tool                                     | How to Use                                                                              | Purpose                                                     |
+| ---------------------------------------- | --------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `MALLOC_TRACE` + `mtrace()`/`muntrace()` | Set `MALLOC_TRACE=/path/to/file`, call `mtrace()` in code, analyze with `mtrace` script | Logs all malloc/free calls → find leaks/unmatched frees     |
+| `mcheck()`/`mprobe()`                    | Link with `-lmcheck`                                                                    | Runtime consistency checks (e.g., buffer overruns)          |
+| `MALLOC_CHECK_` environment variable     | `MALLOC_CHECK_=1` (diagnostic) or `2` (abort on error)                                  | Simple, no recompilation needed; catches common errors fast |
+
 | **Note**: Ignored in set-user-ID/set-group-ID programs for security.
 
 #### Third-Party Malloc Debugging Libraries
+
 Replace standard `malloc` by linking against a debugging library (for development only — slower, more memory):
 
 - **Electric Fence** – uses virtual memory to catch overruns immediately.
@@ -194,6 +210,7 @@ Replace standard `malloc` by linking against a debugging library (for developmen
 - **Insure++** – commercial tool with deep checking.
 
 #### Non-Portable glibc Extensions for Monitoring/Control
+
 - `mallopt()` – Tune `malloc` behavior (e.g., threshold for shrinking heap, max size before using `mmap()`).
 - `mallinfo()` – Returns stats (heap usage, free chunks, etc.).
 
@@ -202,27 +219,33 @@ Replace standard `malloc` by linking against a debugging library (for developmen
 ### Other Methods of Allocating Memory on the Heap
 
 #### 1. `calloc()` – Allocate and Zero-Initialize an Array
+
 ```c
 #include <stdlib.h>
 void *calloc(size_t numitems, size_t size);
 ```
+
 - Allocates space for `numitems` objects, each of `size` bytes.
 - Total bytes: `numitems × size` (overflow-checked on modern glibc).
 - **Initializes all bytes to 0** (unlike `malloc()`).
 - Returns pointer to block or `NULL` on failure.
 
 **Typical use**:
+
 ```c
 struct myStruct *p = calloc(1000, sizeof(struct myStruct));
 if (p == NULL) errExit("calloc");
 ```
+
 - Equivalent to `malloc(1000 * sizeof(struct myStruct))` + `memset(..., 0, ...)`, but atomic and slightly more efficient.
 
 #### 2. `realloc()` – Resize a Previously Allocated Block
+
 ```c
 #include <stdlib.h>
 void *realloc(void *ptr, size_t size);
 ```
+
 - Changes the size of the block pointed to by `ptr` (previously returned by `malloc()`, `calloc()`, or `realloc()`) to `size` bytes.
 - Returns pointer to the (possibly moved) resized block, or `NULL` on error.
 - **Key behaviors**:
@@ -232,14 +255,17 @@ void *realloc(void *ptr, size_t size);
   - If `size == 0` → behaves like `free(ptr)` then `malloc(0)`.
 
 **How resizing works** (glibc strategy):
+
 - If possible: **extend in place** (coalesce with next free block or grow heap via `sbrk()`).
 - If not possible (e.g., block in middle of heap): **allocate new block**, copy data, free old block → expensive 🫤!
 
 **⚠️: May move the block**
+
 - Returned pointer may differ from `ptr`.
 - All pointers into the old block (except offset from start) become **invalid**.
 
 **Safe usage pattern** (avoid losing pointer on failure):
+
 ```c
 void *nptr = realloc(ptr, newsize);
 if (nptr == NULL) {
@@ -256,26 +282,31 @@ if (nptr == NULL) {
 Some applications (e.g., vectorized code, direct I/O) require memory aligned on larger boundaries than the default (usually 8/16 bytes).
 
 ##### a. `memalign()` (glibc/non-standard)
+
 ```c
 #include <malloc.h>
 void *memalign(size_t boundary, size_t size);
 ```
+
 - Allocates `size` bytes aligned on a multiple of `boundary` (must be power of 2).
 - Returns aligned pointer or `NULL` on error.
 - **Not in SUSv3**, availability varies.
 - Can be freed with `free()` on glibc (safe).
 
 ##### b. `posix_memalign()` (standardized in SUSv3)
+
 ```c
 #include <stdlib.h>
 int posix_memalign(void **memptr, size_t alignment, size_t size);
 ```
+
 - Allocates `size` bytes aligned on `alignment`.
 - `alignment` must be power of 2 **and** multiple of `sizeof(void *)` (typically 4 or 8).
 - Stores pointer in `*memptr`.
 - Returns **0** on success, or **error code** (e.g., `EINVAL`, `ENOMEM`) on failure — **not -1**.
 
 **Example** (allocate 65,536 bytes on 4096-byte boundary):
+
 ```c
 void *memptr;
 int s = posix_memalign(&memptr, 1024 * sizeof(void *), 65536);
@@ -286,13 +317,13 @@ if (s != 0) handle_error(s);  // e.g., EINVAL or ENOMEM
 
 #### Summary Table
 
-| Function             | Purpose                              | Initializes? | Can Move Block? | Special Notes                                      |
-|----------------------|--------------------------------------|--------------|-----------------|----------------------------------------------------|
-| `malloc(size)`       | General allocation                   | No           | N/A             | Uninitialized, default alignment                   |
-| `calloc(n, size)`    | Array of n items, zeroed             | Yes (all 0)  | N/A             | Safer for arrays/structs                           |
-| `realloc(ptr, size)` | Resize existing block                | No (new bytes) | Yes           | Expensive if relocation needed; use return value    |
-| `memalign(boundary, size)` | Aligned allocation (non-standard) | No           | N/A             | glibc-specific header, power-of-2 boundary         |
-| `posix_memalign()`   | Aligned allocation (standard)        | No           | N/A             | Returns error code, stricter alignment rules       |
+| Function                   | Purpose                           | Initializes?   | Can Move Block? | Special Notes                                    |
+| -------------------------- | --------------------------------- | -------------- | --------------- | ------------------------------------------------ |
+| `malloc(size)`             | General allocation                | No             | N/A             | Uninitialized, default alignment                 |
+| `calloc(n, size)`          | Array of n items, zeroed          | Yes (all 0)    | N/A             | Safer for arrays/structs                         |
+| `realloc(ptr, size)`       | Resize existing block             | No (new bytes) | Yes             | Expensive if relocation needed; use return value |
+| `memalign(boundary, size)` | Aligned allocation (non-standard) | No             | N/A             | glibc-specific header, power-of-2 boundary       |
+| `posix_memalign()`         | Aligned allocation (standard)     | No             | N/A             | Returns error code, stricter alignment rules     |
 
 ## Allocating Memory on the Stack: alloca()
 
@@ -300,16 +331,19 @@ if (s != 0) handle_error(s);  // e.g., EINVAL or ENOMEM
 #include <alloca.h>    // Or <stdlib.h> on some systems
 void *alloca(size_t size);
 ```
+
 - Allocates `size` bytes of memory **within the current function's stack frame**.
 - Returns a pointer to the allocated block (no `NULL` on failure — see risks below).
 - Memory is **automatically freed** when the function returns (stack frame is popped).
 
 **Key differences from `malloc()`**:
+
 - **Do NOT** call `free()` on `alloca()`-allocated memory (would corrupt stack).
 - **Cannot** use `realloc()` to resize it.
 - No explicit deallocation needed.
 
 #### How `alloca()` Works
+
 - Implemented as **inline compiler code**: simply subtracts `size` from the stack pointer (on downward-growing stacks).
 - Allocates space **above** the current frame (toward higher addresses, but within the frame).
 - Extremely **fast**:
@@ -318,14 +352,16 @@ void *alloca(size_t size);
 - Memory is reclaimed automatically when the function returns (stack pointer restored).
 
 #### Advantages Over `malloc()`
-| Advantage | Explanation |
-|-----------|-------------|
-| **Speed** | Inline adjustment of stack pointer — much faster than `malloc()`'s bookkeeping. |
-| **Automatic cleanup** | Freed on function return — no need to track and `free()` on all exit paths. Simplifies code. |
+
+| Advantage                               | Explanation                                                                                                                                                      |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Speed**                               | Inline adjustment of stack pointer — much faster than `malloc()`'s bookkeeping.                                                                                  |
+| **Automatic cleanup**                   | Freed on function return — no need to track and `free()` on all exit paths. Simplifies code.                                                                     |
 | **No memory leaks with nonlocal jumps** | Perfect with `longjmp()` or `siglongjmp()` (e.g., from signal handlers): as stack unwinds, all `alloca()` memory is automatically discarded. Impossible to leak. |
-| **No fragmentation** | Stack memory is contiguous and reused per call. |
+| **No fragmentation**                    | Stack memory is contiguous and reused per call.                                                                                                                  |
 
 #### Risks and Limitations
+
 - **No error checking**:
   - If request exceeds available stack space → **stack overflow**.
   - Behavior is **undefined**: may crash immediately (`SIGSEGV`), corrupt data, or cause subtle bugs.
@@ -337,6 +373,7 @@ void *alloca(size_t size);
 - **Stack size is limited** (typically 8 MB on Linux) → not suitable for large allocations.
 
 #### When to Use `alloca()`
+
 - Small, temporary buffers needed only until function return.
 - Performance-critical code where allocation speed matters.
 - Complex functions with many return paths (avoids manual `free()` on each path).
