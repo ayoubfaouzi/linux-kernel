@@ -54,11 +54,9 @@ Every process has a set of associated numeric user identifiers (UIDs) and group 
   chmod g+s prog    # Set-group-ID bit
   ```
 - When displayed with `ls -l`, the execute bit `x` becomes `s`:
-
-  ```
-  -rwsr-sr-x  1 root root 302585 Jun 26 15:05 prog
-  ```
-
+    ```bash
+    -rwsr-sr-x  1 root root 302585 Jun 26 15:05 prog
+    ```
   - `s` in owner execute position → set-user-ID
   - `s` in group execute position → set-group-ID
 - When a set-user-ID program runs:
