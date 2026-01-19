@@ -61,7 +61,6 @@ Every process has a set of associated numeric user identifiers (UIDs) and group 
 
   - `s` in owner execute position → set-user-ID
   - `s` in group execute position → set-group-ID
-
 - When a set-user-ID program runs:
   - **Effective UID** = **owner UID** of the file (not the real user).
   - Real UID stays the same (the actual user who ran it).
@@ -98,3 +97,59 @@ Now ordinary users can run it and authenticate against the shadow file.
 
 - Extremely powerful: Lets unprivileged users perform privileged tasks safely.
 - Extremely dangerous if the program is poorly written → security vulnerabilities.
+
+## Saved Set-User-ID and Saved Set-Group-ID
+
+#### When and How Saved IDs Are Set
+
+During every `exec()` (program execution), the kernel performs (among other steps):
+
+1. **If the file has the set-user-ID bit set**:
+   - Effective UID ← **owner UID** of the executable file.
+   - Otherwise, effective UID remains unchanged.
+   - (Same logic applies to set-group-ID → effective GID ← file's group owner.)
+2. **Regardless of the set-ID bits**:
+   - **Saved set-user-ID** ← current **effective UID** (after step 1).
+   - **Saved set-group-ID** ← current **effective GID** (after step 1).
+
+This happens **every time** a program is executed — even for normal (non-set-ID) programs.
+
+#### Example: Running a Set-User-ID-Root Program
+
+Initial process state (before `exec()`):
+
+- Real UID = 1000
+- Effective UID = 1000
+- Saved set-UID = 1000
+
+Executes a **set-user-ID program owned by root** (UID 0):
+
+After `exec()`:
+
+- **Real UID** = 1000 (unchanged)
+- **Effective UID** = 0 (because set-user-ID bit was set → file owner UID)
+- **Saved set-UID** = 0 (copied from the new effective UID)
+
+Result: Process now runs with **full superuser privileges** (effective UID = 0), but the **saved set-UID remembers** that it can return to 0 later.
+
+#### Purpose of Saved IDs: Temporary Privilege Dropping
+
+The saved IDs allow a program to:
+
+- **Start with elevated privileges** (effective = file owner, e.g., root).
+- **Temporarily drop privileges** (set effective UID back to real UID = 1000 → become unprivileged).
+- **Later regain privileges** (set effective UID back to **saved set-UID** = 0).
+
+👍 This is **essential for secure programming**:
+
+- A set-user-ID-root program should **not** run as root the entire time.
+- It should drop to the real (unprivileged) user whenever possible.
+- Use saved set-UID to **regain root** only when needed (e.g., to write to `/etc/shadow`).
+
+#### How to Change Effective IDs (Preview)
+
+Various system calls allow switching:
+
+- `seteuid()`, `setegid()` → change only effective ID.
+- `setreuid()`, `setregid()` → change real and/or effective (with restrictions).
+- A privileged process can set effective to **saved** or **real** UID/GID.
