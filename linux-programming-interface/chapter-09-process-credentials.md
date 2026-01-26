@@ -54,7 +54,7 @@ Every process has a set of associated numeric user identifiers (UIDs) and group 
   chmod g+s prog    # Set-group-ID bit
   ```
 - When displayed with `ls -l`, the execute bit `x` becomes `s`:
-    ```bash
+    ```py
     -rwsr-sr-x  1 root root 302585 Jun 26 15:05 prog
     ```
   - `s` in owner execute position → set-user-ID
@@ -206,21 +206,67 @@ Various system calls allow switching:
 #### How Supplementary Groups Are Determined (Example)
 
 User `ayoub` has primary group `users` (GID 100 from `/etc/passwd`):
-```sh
+```c
 ayoub:x:1001:100:Ayoub:/home/ayoub:/bin/bash
 ```
 
 And belongs to supplementary groups `staff` and `developers` (listed in `/etc/group`):
-```sh
+```c
 staff:x:101:ayoub,martin
 developers:x:105:ayoub,teamlead
 ```
 
-→ Process credentials for `ayoub`'s shell/login:
+- ➡️ Process credentials for `ayoub`'s shell/login:
   - Real UID: 1001
   - Effective UID: 1001 (unless setuid program)
   - Primary GID: 100 (`users`)
   - Supplementary GIDs: 101 (`staff`), 105 (`developers`)
-→ `ayoub` gets file access rights from **all four groups**: `users`, `staff`, `developers`, and his primary group.
+- ➡️ `ayoub` gets file access rights from **all four groups**: `users`, `staff`, `developers`, and his primary group.
 
 ## Retrieving and Modifying Process Credentials
+
+- Credentials include: **real**, **effective**, **saved set**, **file-system** (Linux-specific), and **supplementary** UIDs/GIDs.
+- **Privileged process** (traditional): effective UID = 0 (root/superuser).
+- **Modern Linux** uses **capabilities** (Chapter 39) instead of blanket root privileges:
+  - **CAP_SETUID**: Allows arbitrary changes to **user IDs** (real, effective, saved set).
+  - **CAP_SETGID**: Allows arbitrary changes to **group IDs** (real, effective, saved set, supplementary).
+- 👉 Most credential changes require **one of these capabilities** (i.e., root or a process with the capability granted).
+- `/proc/PID/status` provides a quick, human-readable view:
+  ```
+  Uid:    1000    1000    1000    1000
+  Gid:    1000    1000    1000    1000
+  Groups: 1000 27 100  ...
+  ```
+  - Order: **real, effective, saved set, file-system** (for both Uid and Gid).
+
+#### Overview of APIs (Detailed Coverage in Following Subsections)
+The book divides them into:
+
+1. **Retrieval functions** (get*):
+   - `getuid()`, `geteuid()`, `getresuid()` → user IDs
+   - `getgid()`, `getegid()`, `getresgid()` → group IDs
+   - `getgroups()` → supplementary groups
+2. **Modification system calls** (set*):
+   - `setuid()`, `seteuid()`, `setreuid()`, `setresuid()` → user IDs
+   - `setgid()`, `setegid()`, `setregid()`, `setresgid()` → group IDs
+   - `setgroups()`, `initgroups()` → supplementary groups
+   - `setfsuid()`, `setfsgid()` → file-system IDs (Linux-specific)
+3. **Portability**:
+   - Only a subset are in **SUSv3** (e.g., `setuid()`, `setgid()`, `seteuid()`, `setegid()`, `getuid()`, `geteuid()`, etc.).
+   - Others are **widely available** (BSD, Solaris, etc.) or **Linux-specific** (e.g., `getresuid()`, `setresuid()`, `setfsuid()`).
+
+#### General Rules for Changing Credentials
+- Only **privileged processes** (effective UID=0 or with CAP_SETUID/CAP_SETGID) can arbitrarily change IDs.
+- Unprivileged processes can usually **only lower** their privileges (e.g., drop effective UID to real UID).
+- **Saved set-IDs** are used to **regain** dropped privileges (critical for set-user-ID programs).
+
+#### Summary Table (Preview of Table 9-1 – Full Details in Book)
+
+| Call               | Changes Which IDs?                  | Privileged? | Can regain saved? | Portability       |
+|--------------------|-------------------------------------|-------------|-------------------|-------------------|
+| `setuid()`         | Real + effective + saved (sometimes) | Yes         | Sometimes         | SUSv3             |
+| `seteuid()`        | Effective only                      | Sometimes   | No                | SUSv3             |
+| `setreuid()`       | Real + effective                    | Yes         | No                | Widely available  |
+| `setresuid()`      | Real + effective + saved            | Yes         | Yes               | Linux/BSD         |
+| `setgroups()`      | Supplementary groups                | Yes         | —                 | Widely available  |
+| `initgroups()`     | Supplementary (from `/etc/group`)   | Yes         | —                 | Widely available  |
