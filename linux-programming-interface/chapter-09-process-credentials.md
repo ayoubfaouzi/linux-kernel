@@ -10,7 +10,7 @@ Every process has a set of associated numeric user identifiers (UIDs) and group 
 
 ## Real User ID and Real Group ID
 
-- Represent the **true identity** of the user/group running the process.
+- Represent the **true identity** of the user/group running the process. It is the ID of the user/group who **started the process**.
 - Set during login: login shell gets them from fields 3 and 4 of the user's `/etc/passwd` entry.
 - Inherited by all child processes (via `fork()`).
 - Normally unchanging throughout the process lifetime (except by `root`).
@@ -20,10 +20,11 @@ Every process has a set of associated numeric user identifiers (UIDs) and group 
 
 - On **most UNIX systems** (and Linux, with minor differences noted in Section 9.5):
   - The **effective UID**, **effective GID**, and **supplementary group IDs** together determine the **permissions** granted to a **process** when it performs operations.
+  - 💡 It is what the kernel looks at to decide if you have the "right" to access a file, run a specific command, or use a system resource.
 - Typical uses:
   - **File access** (read/write/execute permissions checked against file owner/group and process effective/supplementary IDs).
   - **System V IPC objects** (shared memory, semaphores, message queues) — ownership checked similarly.
-  - **Sending signals** (Section 20.5): a process can signal another only if effective UID matches real/effective UID of target (or is root).
+  - **Sending signals**: a process can signal another only if effective UID matches real/effective UID of target (or is root).
   - Many other system calls (e.g., binding privileged ports <1024, changing ownership, etc.).
 - A process with **effective UID == 0** (root) is **privileged** (superuser).
   - Can bypass most permission checks.
@@ -92,16 +93,14 @@ To allow any user to run the password-checking program (Listing 8-2) that needs 
 ```
 
 Now ordinary users can run it and authenticate against the shadow file.
-
 - Extremely powerful: Lets unprivileged users perform privileged tasks safely.
-- Extremely dangerous if the program is poorly written → security vulnerabilities.
+- Extremely dangerous if the program is poorly written 🤷 → security vulnerabilities.
 
 ## Saved Set-User-ID and Saved Set-Group-ID
 
 #### When and How Saved IDs Are Set
 
 During every `exec()` (program execution), the kernel performs (among other steps):
-
 1. **If the file has the set-user-ID bit set**:
    - Effective UID ← **owner UID** of the executable file.
    - Otherwise, effective UID remains unchanged.
@@ -135,14 +134,10 @@ This happens **every time** a program is executed — even for normal (non-set-I
   - A set-user-ID-root program should **not** run as root the entire time.
   - It should drop to the real (unprivileged) user whenever possible.
   - Use saved set-UID to **regain root** only when needed.
-
-#### How to Change Effective IDs (Preview)
-
-Various system calls allow switching:
-
-- `seteuid()`, `setegid()` → change only effective ID.
-- `setreuid()`, `setregid()` → change real and/or effective (with restrictions).
-- A privileged process can set effective to **saved** or **real** UID/GID.
+- Various system calls allow switching:
+  - `seteuid()`, `setegid()` → change only effective ID.
+  - `setreuid()`, `setregid()` → change real and/or effective (with restrictions).
+  - A privileged process can set effective to **saved** or **real** UID/GID.
 
 ## File-System User ID and File-System Group ID
 
@@ -169,6 +164,7 @@ Various system calls allow switching:
 - These calls are **rarely used** in modern code.
 
 #### Historical Reason for File-System IDs
+
 - Introduced in **Linux 1.2** (early 1990s) to solve a problem with the **Linux NFS server**.
 - Old signal rules (pre-2.0): A process could send a signal to another if sender's **effective UID** matched target's **real** or **effective** UID.
 - NFS server needed to:
@@ -177,13 +173,15 @@ Various system calls allow switching:
 - 👉 Use **separate** file-system IDs for file access, while keeping **effective** IDs unchanged → safe from signals.
 
 #### Modern Status
+
 - From **kernel 2.0** onward, Linux adopted **POSIX/SUSv3** signal rules (Section 20.5):
   - Signal permission no longer depends on effective UID of target.
   - File-system IDs are **no longer strictly necessary**.
 - Today, the same result can be achieved by **temporarily changing effective** UID/GID (drop to unprivileged, do file operation, regain via saved IDs).
-- File-system IDs remain **for backward compatibility** with old software (especially NFS-related).
+- File-system IDs remain **for backward compatibility** with old software (especially NFS-related) 🤷.
 
 #### Practical Impact
+
 - In virtually all modern programs, **FSUID/FSGID == effective UID/GID**.
 - Therefore, the book (and most documentation) describes file permission checks in terms of **effective IDs** — the presence of file-system IDs **seldom makes a difference** on current Linux.
 - You can generally **ignore** FSUID/FSGID unless:
@@ -256,9 +254,9 @@ The book divides them into:
    - Others are **widely available** (BSD, Solaris, etc.) or **Linux-specific** (e.g., `getresuid()`, `setresuid()`, `setfsuid()`).
 
 #### General Rules for Changing Credentials
-- Only **privileged processes** (effective UID=0 or with CAP_SETUID/CAP_SETGID) can arbitrarily change IDs.
+- Only **privileged processes** (effective UID=0 or with `CAP_SETUID`/`CAP_SETGID`) can arbitrarily change IDs.
 - Unprivileged processes can usually **only lower** their privileges (e.g., drop effective UID to real UID).
-- **Saved set-IDs** are used to **regain** dropped privileges (critical for set-user-ID programs).
+- **Saved set-IDs** are used to **regain** dropped privileges (critical for `set-user-ID` programs).
 
 #### Summary Table (Preview of Table 9-1 – Full Details in Book)
 
@@ -270,3 +268,78 @@ The book divides them into:
 | `setresuid()`      | Real + effective + saved            | Yes         | Yes               | Linux/BSD         |
 | `setgroups()`      | Supplementary groups                | Yes         | —                 | Widely available  |
 | `initgroups()`     | Supplementary (from `/etc/group`)   | Yes         | —                 | Widely available  |
+
+### Retrieving Real and Effective IDs (Always Successful)
+
+These four simple system calls return the current IDs of the calling process:
+
+```c
+uid_t getuid(void);     // Real user ID
+uid_t geteuid(void);    // Effective user ID
+gid_t getgid(void);     // Real group ID
+gid_t getegid(void);    // Effective group ID
+```
+
+- Always succeed (no error return).
+- Frequently used to check current privilege level (e.g., `geteuid() == 0` → privileged).
+
+### Modifying Effective IDs:
+
+```c
+int setuid(uid_t uid);
+int setgid(gid_t gid);
+```
+
+- Return **0** on success, **–1** on error (sets `errno`).
+- **Rules for `setuid()`** (analogous for `setgid()` with group IDs):
+  - **Unprivileged process** (effective UID ≠ 0):
+    - Can **only** change **effective UID** to match either:
+      - Current **real UID**, or
+      - Current **saved set-user-ID**.
+    - Attempts to set any other value → `EPERM`.
+    - Useful mainly in **set-user-ID programs** (where real, effective, and saved IDs may differ).
+  - **Privileged process** (effective UID = 0):
+    - Can set **real UID**, **effective UID**, and **saved set-user-ID** all to the specified `uid` (if `uid ≠ 0`).
+    - This is a **one-way trip** — once real and saved are changed to non-zero, privileges are **permanently lost**.
+    - If you want to **regain** privileges later → use `seteuid()` or `setreuid()` instead.
+
+**Best practice example** (irrevocably drop all privileges in a **set-user-ID-root** program):
+```c
+if (setuid(getuid()) == -1)
+  errExit("setuid");
+// Now: real = effective = saved = original real UID (usually non-root)
+```
+
+**For set-group-ID programs**:
+- `setgid()` follows similar rules, but **changing group IDs does not lose privileges** (privileges are tied to effective UID).
+- A privileged process can freely change group IDs to any value.
+
+#### Modifying Only the Effective ID: `seteuid()` and `setegid()`
+
+```c
+int seteuid(uid_t euid);
+int setegid(gid_t egid);
+```
+
+- Return **0** on success, **–1** on error.
+- **Rules** (same for both):
+  - **Unprivileged process**:
+    - Can change effective ID **only** to match current **real UID/GID** or **saved set-UID/GID**.
+    - Same effect as `setuid()`/`setgid()` for unprivileged processes (except for some BSD differences).
+  - **Privileged process**:
+    - Can change effective ID **to any value**.
+    - If set to nonzero → process **loses privilege** (but can regain it later using saved ID).
+- 👉 **Preferred usage** in set-user-ID/set-group-ID programs:
+  - Temporarily drop privileges: `seteuid(getuid())`
+  - Later regain: `seteuid(saved_euid)` (where `saved_euid = geteuid()` at startup)
+
+**Example** (safe temporary privilege drop):
+```c
+uid_t orig_euid = geteuid();           // Usually 0 in setuid-root program
+if (seteuid(getuid()) == -1) errExit("seteuid");   // Drop to real (unprivileged)
+
+// Do unprivileged work...
+if (seteuid(orig_euid) == -1) errExit("seteuid");  // Regain privileges
+```
+
+### Modifying real and effective IDs
