@@ -55,9 +55,9 @@ Every process has a set of associated numeric user identifiers (UIDs) and group 
   chmod g+s prog    # Set-group-ID bit
   ```
 - When displayed with `ls -l`, the execute bit `x` becomes `s`:
-    ```py
-    -rwsr-sr-x  1 root root 302585 Jun 26 15:05 prog
-    ```
+  ```py
+  -rwsr-sr-x  1 root root 302585 Jun 26 15:05 prog
+  ```
   - `s` in owner execute position → set-user-ID
   - `s` in group execute position → set-group-ID
 - When a set-user-ID program runs:
@@ -93,6 +93,7 @@ To allow any user to run the password-checking program (Listing 8-2) that needs 
 ```
 
 Now ordinary users can run it and authenticate against the shadow file.
+
 - Extremely powerful: Lets unprivileged users perform privileged tasks safely.
 - Extremely dangerous if the program is poorly written 🤷 → security vulnerabilities.
 
@@ -101,6 +102,7 @@ Now ordinary users can run it and authenticate against the shadow file.
 #### When and How Saved IDs Are Set
 
 During every `exec()` (program execution), the kernel performs (among other steps):
+
 1. **If the file has the set-user-ID bit set**:
    - Effective UID ← **owner UID** of the executable file.
    - Otherwise, effective UID remains unchanged.
@@ -122,7 +124,7 @@ This happens **every time** a program is executed — even for normal (non-set-I
   - **Real UID** = 1000 (unchanged)
   - **Effective UID** = 0 (because set-user-ID bit was set → file owner UID)
   - **Saved set-UID** = 0 (copied from the new effective UID)
-👉 Process now runs with **full superuser privileges** (effective UID = 0), but the **saved set-UID remembers** that it can return to 0 later.
+    👉 Process now runs with **full superuser privileges** (effective UID = 0), but the **saved set-UID remembers** that it can return to 0 later.
 
 #### Purpose of Saved IDs: Temporary Privilege Dropping
 
@@ -151,11 +153,13 @@ This happens **every time** a program is executed — even for normal (non-set-I
   - All **other** privilege checks (signals, binding low ports, etc.) still use the **effective** UID/GID.
 
 #### Default Behavior
+
 - Normally, **FSUID = effective UID** and **FSGID = effective GID** (and thus usually = real IDs too).
 - Whenever the **effective** UID or GID changes (via system call or exec of set-user-ID/set-group-ID program), the **file-system** IDs are **automatically updated** to match.
 - 👉 In almost all practical cases, Linux behaves **exactly like other UNIX implementations** — file permissions are checked using effective IDs 🤷‍♀️.
 
 #### When and Why They Can Differ
+
 - The only way FSUID/FSGID differ from effective UID/GID is if you **explicitly** set them using the **Linux-specific** system calls:
   ```c
   int setfsuid(uid_t fsuid);
@@ -204,11 +208,13 @@ This happens **every time** a program is executed — even for normal (non-set-I
 #### How Supplementary Groups Are Determined (Example)
 
 User `ayoub` has primary group `users` (GID 100 from `/etc/passwd`):
+
 ```c
 ayoub:x:1001:100:Ayoub:/home/ayoub:/bin/bash
 ```
 
 And belongs to supplementary groups `staff` and `developers` (listed in `/etc/group`):
+
 ```c
 staff:x:101:ayoub,martin
 developers:x:105:ayoub,teamlead
@@ -238,13 +244,14 @@ developers:x:105:ayoub,teamlead
   - Order: **real, effective, saved set, file-system** (for both Uid and Gid).
 
 #### Overview of APIs (Detailed Coverage in Following Subsections)
+
 The book divides them into:
 
-1. **Retrieval functions** (get*):
+1. **Retrieval functions** (get\*):
    - `getuid()`, `geteuid()`, `getresuid()` → user IDs
    - `getgid()`, `getegid()`, `getresgid()` → group IDs
    - `getgroups()` → supplementary groups
-2. **Modification system calls** (set*):
+2. **Modification system calls** (set\*):
    - `setuid()`, `seteuid()`, `setreuid()`, `setresuid()` → user IDs
    - `setgid()`, `setegid()`, `setregid()`, `setresgid()` → group IDs
    - `setgroups()`, `initgroups()` → supplementary groups
@@ -254,20 +261,21 @@ The book divides them into:
    - Others are **widely available** (BSD, Solaris, etc.) or **Linux-specific** (e.g., `getresuid()`, `setresuid()`, `setfsuid()`).
 
 #### General Rules for Changing Credentials
+
 - Only **privileged processes** (effective UID=0 or with `CAP_SETUID`/`CAP_SETGID`) can arbitrarily change IDs.
 - Unprivileged processes can usually **only lower** their privileges (e.g., drop effective UID to real UID).
 - **Saved set-IDs** are used to **regain** dropped privileges (critical for `set-user-ID` programs).
 
 #### Summary Table (Preview of Table 9-1 – Full Details in Book)
 
-| Call               | Changes Which IDs?                  | Privileged? | Can regain saved? | Portability       |
-|--------------------|-------------------------------------|-------------|-------------------|-------------------|
-| `setuid()`         | Real + effective + saved (sometimes) | Yes         | Sometimes         | SUSv3             |
-| `seteuid()`        | Effective only                      | Sometimes   | No                | SUSv3             |
-| `setreuid()`       | Real + effective                    | Yes         | No                | Widely available  |
-| `setresuid()`      | Real + effective + saved            | Yes         | Yes               | Linux/BSD         |
-| `setgroups()`      | Supplementary groups                | Yes         | —                 | Widely available  |
-| `initgroups()`     | Supplementary (from `/etc/group`)   | Yes         | —                 | Widely available  |
+| Call           | Changes Which IDs?                   | Privileged? | Can regain saved? | Portability      |
+| -------------- | ------------------------------------ | ----------- | ----------------- | ---------------- |
+| `setuid()`     | Real + effective + saved (sometimes) | Yes         | Sometimes         | SUSv3            |
+| `seteuid()`    | Effective only                       | Sometimes   | No                | SUSv3            |
+| `setreuid()`   | Real + effective                     | Yes         | No                | Widely available |
+| `setresuid()`  | Real + effective + saved             | Yes         | Yes               | Linux/BSD        |
+| `setgroups()`  | Supplementary groups                 | Yes         | —                 | Widely available |
+| `initgroups()` | Supplementary (from `/etc/group`)    | Yes         | —                 | Widely available |
 
 ### Retrieving Real and Effective IDs (Always Successful)
 
@@ -304,6 +312,7 @@ int setgid(gid_t gid);
     - If you want to **regain** privileges later → use `seteuid()` or `setreuid()` instead.
 
 **Best practice example** (irrevocably drop all privileges in a **set-user-ID-root** program):
+
 ```c
 if (setuid(getuid()) == -1)
   errExit("setuid");
@@ -311,6 +320,7 @@ if (setuid(getuid()) == -1)
 ```
 
 **For set-group-ID programs**:
+
 - `setgid()` follows similar rules, but **changing group IDs does not lose privileges** (privileges are tied to effective UID).
 - A privileged process can freely change group IDs to any value.
 
@@ -334,6 +344,7 @@ int setegid(gid_t egid);
   - Later regain: `seteuid(saved_euid)` (where `saved_euid = geteuid()` at startup)
 
 **Example** (safe temporary privilege drop):
+
 ```c
 uid_t orig_euid = geteuid();           // Usually 0 in setuid-root program
 if (seteuid(getuid()) == -1) errExit("seteuid");   // Drop to real (unprivileged)
@@ -411,6 +422,7 @@ int getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid);
   - `*suid` / `*sgid` → **saved set-user-ID** / **saved set-group-ID**
 
 #### Why These Calls Exist
+
 - On **most UNIX implementations** (including SUSv3/POSIX):
   - There is **no standard way** to directly retrieve the **saved set-user-ID** or **saved set-group-ID**.
   - Only real and effective IDs are accessible via `getuid()`/`geteuid()`/`getgid()`/`getegid()`.
@@ -420,12 +432,14 @@ int getresgid(gid_t *rgid, gid_t *egid, gid_t *sgid);
   - Verifying current privilege state (especially saved IDs)
 
 #### Key Characteristics
+
 - **Linux-specific** — **not** in SUSv3 or SUSv4 → **not portable**.
 - Require `_GNU_SOURCE` feature test macro to be defined.
 - Simple and always successful unless pointers are invalid (then `EFAULT`).
 - No equivalent standard functions exist on other UNIX systems (some BSDs have similar calls, but not identical).
 
 #### Practical Use Example
+
 ```c
 #define _GNU_SOURCE
 #include <unistd.h>
@@ -447,6 +461,7 @@ int main(void) {
 ```
 
 Output (example from a normal user):
+
 ```
 Real UID:      1000
 Effective UID: 1000
@@ -454,6 +469,7 @@ Saved set-UID: 1000
 ```
 
 Output (from inside a set-user-ID-root program):
+
 ```
 Real UID:      1000
 Effective UID: 0
@@ -489,6 +505,7 @@ int setresgid(gid_t rgid, gid_t egid, gid_t sgid);
    - No partial updates occur (same atomicity rule applies to most credential-changing calls in this chapter).
 
 #### Portability
+
 - **Not in SUSv3** (or SUSv4) → **non-portable**.
 - Available on **Linux** and some **BSD** variants.
 - **Not** on most other commercial UNIX systems (Solaris, AIX, HP-UX, etc.).
@@ -496,16 +513,17 @@ int setresgid(gid_t rgid, gid_t egid, gid_t sgid);
 
 #### Comparison with Other Calls
 
-| Call              | Can Change Real? | Effective? | Saved Set? | File-System? | Privileged Needed? | Portability     |
-|-------------------|------------------|------------|------------|--------------|--------------------|-----------------|
-| `setuid()`        | Yes (sometimes)  | Yes        | Sometimes  | Auto         | Yes                | SUSv3           |
-| `seteuid()`       | No               | Yes        | No         | Auto         | Sometimes          | SUSv3           |
-| `setreuid()`      | Yes              | Yes        | Sometimes  | Auto         | Yes                | SUSv3           |
-| `setresuid()`     | Yes              | Yes        | Yes        | Auto         | Yes                | **Linux/BSD**   |
+| Call          | Can Change Real? | Effective? | Saved Set? | File-System? | Privileged Needed? | Portability   |
+| ------------- | ---------------- | ---------- | ---------- | ------------ | ------------------ | ------------- |
+| `setuid()`    | Yes (sometimes)  | Yes        | Sometimes  | Auto         | Yes                | SUSv3         |
+| `seteuid()`   | No               | Yes        | No         | Auto         | Sometimes          | SUSv3         |
+| `setreuid()`  | Yes              | Yes        | Sometimes  | Auto         | Yes                | SUSv3         |
+| `setresuid()` | Yes              | Yes        | Yes        | Auto         | Yes                | **Linux/BSD** |
 
 `setresuid()` is the **only** standard call that lets you **explicitly set the saved set-user-ID** (very useful in complex privilege management).
 
 #### Typical Use Cases
+
 1. **Permanently drop all privileges** (including saved set-ID):
    ```c
    setresuid(getuid(), getuid(), getuid());
@@ -545,6 +563,7 @@ int setfsgid(gid_t fsgid);
    - Can set FSUID **to any value**.
 
 #### Important Implementation Quirks (Unpolished Design)
+
 - **No retrieval functions** — there are **no** `getfsuid()` or `getfsgid()` calls.
   - The only way to discover the current FSUID/FSGID is to call `setfsuid()`/`setfsgid()` and look at the **return value** (previous value).
 - **Automatic sync with effective IDs**:
@@ -552,6 +571,7 @@ int setfsgid(gid_t fsgid);
   - `setfsuid()`/`setfsgid()` are the **only** way to make FSUID differ from effective UID.
 
 #### Modern Recommendation
+
 - **No longer necessary** on current Linux kernels.
 - The original rationale (NFS server signal vulnerability) was fixed in kernel 2.0+ (new signal rules).
 - Same results can now be achieved by **temporarily changing effective IDs** (drop → do file op → regain via saved set-ID).
@@ -563,6 +583,7 @@ int setfsgid(gid_t fsgid);
 ```c
 int getgroups(int gidsetsize, gid_t grouplist[]);
 ```
+
 - **Returns**: Number of group IDs placed in `grouplist` on success, or **–1** on error (`errno` set).
 - `gidsetsize`: Size of the caller-allocated `grouplist` array.
 - `grouplist`: Array where the supplementary GIDs are stored.
@@ -621,12 +642,11 @@ int initgroups(const char *user, gid_t basegid);
 
 #### Summary Table: Supplementary Group Operations
 
-| Function         | Purpose                                      | Privileged? | Portable?     | Notes |
-|------------------|----------------------------------------------|-------------|---------------|-------|
-| `getgroups()`    | Retrieve current supplementary GIDs          | No          | SUSv3         | May include effective GID on some systems |
-| `setgroups()`    | Replace all supplementary GIDs               | Yes         | Widely avail. | Not SUSv3 |
-| `initgroups()`   | Build supplementary list from `/etc/group` + base GID | Yes         | Widely avail. | Convenience for login shells |
-
+| Function       | Purpose                                               | Privileged? | Portable?     | Notes                                     |
+| -------------- | ----------------------------------------------------- | ----------- | ------------- | ----------------------------------------- |
+| `getgroups()`  | Retrieve current supplementary GIDs                   | No          | SUSv3         | May include effective GID on some systems |
+| `setgroups()`  | Replace all supplementary GIDs                        | Yes         | Widely avail. | Not SUSv3                                 |
+| `initgroups()` | Build supplementary list from `/etc/group` + base GID | Yes         | Widely avail. | Convenience for login shells              |
 
 ### Summary of Calls for Modifying Process Credentials
 
@@ -634,22 +654,21 @@ The table below summarizes the effects of the various system calls and library f
 
 <p align="center"><img src="./assets/process-credential-changing-functions.png" width="500px" height="auto"></p>
 
+| Interface            | Purpose and Effect (Unprivileged Process)                                                                                            | Purpose and Effect (Privileged Process)                                                                 | Portability / Notes                                                                        |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `setuid(u)`          | Changes **effective UID** to same value as current **real UID** or **saved set-UID**                                                 | Changes **real UID**, **effective UID**, and **saved set-UID** to any single value (one-way if nonzero) | Specified in SUSv3<br>BSD derivatives have different semantics (may change real/saved too) |
+| `setgid(g)`          | Changes **effective GID** to same value as current **real GID** or **saved set-GID**                                                 | Changes **real GID**, **effective GID**, and **saved set-GID** to any value                             | Specified in SUSv3<br>Similar rules to setuid(), but no privilege loss on GID change       |
+| `seteuid(e)`         | Changes **effective UID** to same value as current **real UID** or **saved set-UID**                                                 | Changes **effective UID** to any value                                                                  | Specified in SUSv3<br>Preferred for temporary privilege drop/regain in set-UID programs    |
+| `setegid(e)`         | Changes **effective GID** to same value as current **real GID** or **saved set-GID**                                                 | Changes **effective GID** to any value                                                                  | Specified in SUSv3<br>Analogous to seteuid() for groups                                    |
+| `setreuid(r, e)`     | (Independently) change **real UID** to same as current real/effective, and **effective UID** to same as real/effective/saved set-UID | (Independently) change **real** and **effective** UIDs to any values                                    | Specified in SUSv3<br>Can affect saved set-UID (SUSv4 behavior)                            |
+| `setregid(r, e)`     | (Independently) change **real GID** and **effective GID** within allowed values (similar to setreuid)                                | (Independently) change **real** and **effective** GIDs to any values                                    | Specified in SUSv3<br>Similar rules to setreuid()                                          |
+| `setresuid(r, e, s)` | (Independently) change **real**, **effective**, and **saved set-UID** to same as current real/effective/saved set-UID                | (Independently) change **real**, **effective**, and **saved set-UID** to any values                     | **Not in SUSv3**<br>Linux/BSD-specific<br>Most powerful/complete control                   |
+| `setresgid(r, e, s)` | (Independently) change **real**, **effective**, and **saved set-GID** within allowed values                                          | (Independently) change **real**, **effective**, and **saved set-GID** to any values                     | **Not in SUSv3**<br>Linux/BSD-specific<br>Analogous to setresuid()                         |
+| `setfsuid(u)`        | Change **file-system UID** to same as current real/effective/file-system/saved set-UID                                               | Change **file-system UID** to any value                                                                 | **Linux-specific**<br>Rarely needed today; silent failure for invalid unprivileged calls   |
+| `setfsgid(g)`        | Change **file-system GID** to same as current real/effective/file-system/saved set-GID                                               | Change **file-system GID** to any value                                                                 | **Linux-specific**<br>Analogous to setfsuid(); usually unnecessary                         |
+| `setgroups(n, list)` | **Cannot** be called by unprivileged process                                                                                         | Set **supplementary group IDs** to any values                                                           | **Not in SUSv3**<br>Available on all UNIX implementations                                  |
 
-| Interface                  | Purpose and Effect (Unprivileged Process)                                                                 | Purpose and Effect (Privileged Process)                                      | Portability / Notes                                                                 |
-|----------------------------|------------------------------------------------------------------------------------------------------------|-------------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
-| `setuid(u)`                | Changes **effective UID** to same value as current **real UID** or **saved set-UID**                       | Changes **real UID**, **effective UID**, and **saved set-UID** to any single value (one-way if nonzero) | Specified in SUSv3<br>BSD derivatives have different semantics (may change real/saved too) |
-| `setgid(g)`                | Changes **effective GID** to same value as current **real GID** or **saved set-GID**                       | Changes **real GID**, **effective GID**, and **saved set-GID** to any value   | Specified in SUSv3<br>Similar rules to setuid(), but no privilege loss on GID change |
-| `seteuid(e)`               | Changes **effective UID** to same value as current **real UID** or **saved set-UID**                       | Changes **effective UID** to any value                                        | Specified in SUSv3<br>Preferred for temporary privilege drop/regain in set-UID programs |
-| `setegid(e)`               | Changes **effective GID** to same value as current **real GID** or **saved set-GID**                       | Changes **effective GID** to any value                                        | Specified in SUSv3<br>Analogous to seteuid() for groups                             |
-| `setreuid(r, e)`           | (Independently) change **real UID** to same as current real/effective, and **effective UID** to same as real/effective/saved set-UID | (Independently) change **real** and **effective** UIDs to any values          | Specified in SUSv3<br>Can affect saved set-UID (SUSv4 behavior)                     |
-| `setregid(r, e)`           | (Independently) change **real GID** and **effective GID** within allowed values (similar to setreuid)     | (Independently) change **real** and **effective** GIDs to any values          | Specified in SUSv3<br>Similar rules to setreuid()                                   |
-| `setresuid(r, e, s)`       | (Independently) change **real**, **effective**, and **saved set-UID** to same as current real/effective/saved set-UID | (Independently) change **real**, **effective**, and **saved set-UID** to any values | **Not in SUSv3**<br>Linux/BSD-specific<br>Most powerful/complete control           |
-| `setresgid(r, e, s)`       | (Independently) change **real**, **effective**, and **saved set-GID** within allowed values                | (Independently) change **real**, **effective**, and **saved set-GID** to any values | **Not in SUSv3**<br>Linux/BSD-specific<br>Analogous to setresuid()                 |
-| `setfsuid(u)`              | Change **file-system UID** to same as current real/effective/file-system/saved set-UID                     | Change **file-system UID** to any value                                       | **Linux-specific**<br>Rarely needed today; silent failure for invalid unprivileged calls |
-| `setfsgid(g)`              | Change **file-system GID** to same as current real/effective/file-system/saved set-GID                     | Change **file-system GID** to any value                                       | **Linux-specific**<br>Analogous to setfsuid(); usually unnecessary                 |
-| `setgroups(n, list)`       | **Cannot** be called by unprivileged process                                                               | Set **supplementary group IDs** to any values                                 | **Not in SUSv3**<br>Available on all UNIX implementations                           |
-
-Here is an updated and expanded version of **Table 9-1** that incorporates the supplementary information you provided about glibc implementations, saved set-ID side effects, file-system ID updates, and SUSv3 specification gaps. I've kept the table clear, concise, and consistent with the style of *The Linux Programming Interface*.
+Here is an updated and expanded version of **Table 9-1** that incorporates the supplementary information you provided about glibc implementations, saved set-ID side effects, file-system ID updates, and SUSv3 specification gaps. I've kept the table clear, concise, and consistent with the style of _The Linux Programming Interface_.
 
 #### Additional Notes from the Supplementary Information
 
