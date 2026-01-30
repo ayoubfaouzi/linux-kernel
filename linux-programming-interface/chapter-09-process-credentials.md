@@ -632,7 +632,7 @@ int initgroups(const char *user, gid_t basegid);
 
 The table below summarizes the effects of the various system calls and library functions used to change process credentials.
 
-<p align="center"><img src="./assets/process-credential-changing-functions.png" width="400px" height="auto"></p>
+<p align="center"><img src="./assets/process-credential-changing-functions.png" width="500px" height="auto"></p>
 
 
 | Interface                  | Purpose and Effect (Unprivileged Process)                                                                 | Purpose and Effect (Privileged Process)                                      | Portability / Notes                                                                 |
@@ -648,3 +648,22 @@ The table below summarizes the effects of the various system calls and library f
 | `setfsuid(u)`              | Change **file-system UID** to same as current real/effective/file-system/saved set-UID                     | Change **file-system UID** to any value                                       | **Linux-specific**<br>Rarely needed today; silent failure for invalid unprivileged calls |
 | `setfsgid(g)`              | Change **file-system GID** to same as current real/effective/file-system/saved set-GID                     | Change **file-system GID** to any value                                       | **Linux-specific**<br>Analogous to setfsuid(); usually unnecessary                 |
 | `setgroups(n, list)`       | **Cannot** be called by unprivileged process                                                               | Set **supplementary group IDs** to any values                                 | **Not in SUSv3**<br>Available on all UNIX implementations                           |
+
+Here is an updated and expanded version of **Table 9-1** that incorporates the supplementary information you provided about glibc implementations, saved set-ID side effects, file-system ID updates, and SUSv3 specification gaps. I've kept the table clear, concise, and consistent with the style of *The Linux Programming Interface*.
+
+#### Additional Notes from the Supplementary Information
+
+- **glibc implementation details**:
+  - `seteuid(e)` → implemented as `setresuid(-1, e, -1)` (modern glibc) or `setreuid(-1, e)` (older glibc)
+  - `setegid(e)` → implemented as `setregid(-1, e)`
+  - Both allow setting to the **current effective value** (no change) — not required by SUSv3.
+  - `setegid()` may change **saved set-GID** if new effective ≠ current real GID (not in SUSv3).
+- **Saved set-ID side effects** (for `setreuid()`/`setregid()`):
+  - Saved set-UID/GID is set to the **new effective** value if:
+    - `r != -1` (real ID changed), **or**
+    - `e` is different from the **old real** ID.
+  - SUSv3 does **not** specify this → behavior is SUSv4 / Linux-specific.
+- **File-system ID updates** (Linux-specific):
+  - **All** calls that change effective UID/GID **automatically** set FSUID/FSGID to the new effective value.
+  - `setresuid()`/`setresgid()` **always** update FSUID/FSGID to the (possibly unchanged) new effective value.
+  - `setfsuid()`/`setfsgid()` are the **only** way to make FSUID/FSGID differ from effective IDs.
