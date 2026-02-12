@@ -668,7 +668,6 @@ The table below summarizes the effects of the various system calls and library f
 | `setfsgid(g)`        | Change **file-system GID** to same as current real/effective/file-system/saved set-GID                                               | Change **file-system GID** to any value                                                                 | **Linux-specific**<br>Analogous to setfsuid(); usually unnecessary                         |
 | `setgroups(n, list)` | **Cannot** be called by unprivileged process                                                                                         | Set **supplementary group IDs** to any values                                                           | **Not in SUSv3**<br>Available on all UNIX implementations                                  |
 
-Here is an updated and expanded version of **Table 9-1** that incorporates the supplementary information you provided about glibc implementations, saved set-ID side effects, file-system ID updates, and SUSv3 specification gaps. I've kept the table clear, concise, and consistent with the style of _The Linux Programming Interface_.
 
 #### Additional Notes from the Supplementary Information
 
