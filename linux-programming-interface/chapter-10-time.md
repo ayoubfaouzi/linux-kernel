@@ -68,3 +68,8 @@
 - `tz` argument in `gettimeofday()`: obsolete relic from early time-zone handling (never fully supported on Linux).
 
 ## Time-Conversion Functions
+
+The figure belows shows the functions used to convert between `time_t` values and other time formats, including printable representations. These functions shield us from the complexity brought to such conversions by timezones, daylight saving time
+(DST) regimes, and localization issues.
+
+<p align="center"><img src="./assets/calendar-time-functions.png" width="400px" height="auto"></p>
